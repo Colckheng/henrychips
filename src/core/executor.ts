@@ -121,8 +121,12 @@ export class ToolExecutor {
       this.running.delete(runId);
     }
     if (started) this.progress.finish(runId, result.ok ? 'succeeded' : result.error.code === 'CANCELLED' ? 'cancelled' : 'failed', result.ok ? '已完成' : '失败');
-    this.results.set(runId, { result, at: Date.now() });
-    this.pruneResults();
+    // Keep a bounded copy of the result so a finished run can be shown again.
+    const serialized = JSON.stringify(result).length;
+    if (serialized <= 2_000_000) {
+      this.results.set(runId, { result, at: Date.now() });
+      this.pruneResults();
+    }
     try {
       await this.store.append({ runId: meta.runId, tool: name, source: options.source, status: result.ok ? 'succeeded' : result.error.code === 'CANCELLED' ? 'cancelled' : 'failed', startedAt: meta.startedAt, durationMs: meta.durationMs, errorCode: result.ok ? null : result.error.code });
     } catch {
