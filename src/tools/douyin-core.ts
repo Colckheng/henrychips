@@ -79,6 +79,14 @@ function normalize(detail: Record<string, unknown>): DouyinVideo {
   };
 }
 
+/** Chooses between the platform's clean source and its watermarked download source. */
+export function selectDouyinSource(video: DouyinVideo, watermark: 'remove' | 'keep'): { url: string; source: 'no-watermark' | 'watermarked' } {
+  const clean = video.playUrls[0] ?? null;
+  const marked = video.watermarkUrls[0] ?? null;
+  const useMarked = watermark === 'keep' && Boolean(marked);
+  return { url: (useMarked ? marked : clean) ?? marked ?? clean ?? '', source: useMarked ? 'watermarked' : 'no-watermark' };
+}
+
 export async function fetchDouyinVideo(awemeId: string, ctx: ToolContext): Promise<DouyinVideo> {
   if (!ctx.http) throw new ToolError('ACCESS_DENIED', '当前环境未启用网络访问。');
   // Reuse a cached signed session; bootstrap one in the browser only when the

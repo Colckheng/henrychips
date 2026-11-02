@@ -1,7 +1,7 @@
-import { CheckCheck, CheckCircle2, Code2, Download, Eye, LoaderCircle, SquareDashedBottomCode } from 'lucide-react';
+import { CheckCheck, CheckCircle2, Code2, Download, Eye, FolderOpen, LoaderCircle, SquareDashedBottomCode } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { ToolResult } from '../../contracts/run.js';
-import { isRecord } from '../api.js';
+import { isRecord, openOutputFolder } from '../api.js';
 import type { RunProgress } from '../api.js';
 import { formatDuration, formatNumber } from '../presentation.js';
 import { CopyButton } from './CopyButton.js';
@@ -41,6 +41,22 @@ function ProgressView({ progress }: { progress: RunProgress }) {
     <div className="progress-track"><div className={percent === null ? 'progress-fill is-indeterminate' : 'progress-fill'} style={{ width }} /></div>
     {progress.steps.length > 1 && <ol className="progress-steps">{progress.steps.slice(-5).map((step, index) => (
       <li key={`${step.at}-${index}`}><span>{step.phase}</span><span>{step.percent === null ? '' : `${step.percent}%`}</span></li>))}</ol>}
+  </div>;
+}
+
+function OutputFolderButton() {
+  const [state, setState] = useState<'idle' | 'opened' | 'failed'>('idle');
+  const [message, setMessage] = useState('');
+  async function open() {
+    const result = await openOutputFolder();
+    if (result.opened) { setState('opened'); setMessage('已在文件管理器中打开输出目录。'); }
+    else { setState('failed'); setMessage(result.message ?? '无法打开输出目录。'); }
+  }
+  return <div className="output-folder">
+    <button type="button" className="button button-secondary button-small" onClick={() => void open()}>
+      <FolderOpen size={15} aria-hidden="true" />打开输出文件夹
+    </button>
+    {message && <span className={state === 'opened' ? 'output-folder-note' : 'output-folder-note is-error'} role="status">{message}</span>}
   </div>;
 }
 
@@ -88,6 +104,7 @@ export function ResultPanel({ tool, result, status, error, retry, progress }: {
         {view === 'json' ? <pre className="code-block result-json" tabIndex={0} data-testid="result-json">{json}</pre>
           : result.ok ? <ResultView tool={tool} data={result.data} /> : <p className="inline-note">参数已保留，可修改后重试；完整错误信息可在 JSON 视图中查看。</p>}
         <div className="result-meta"><span>RUN ID</span><code>{result.meta.runId}</code><span>{result.meta.source}</span></div>
+        <OutputFolderButton />
       </>}
     </div>
   </section>;

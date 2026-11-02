@@ -54,3 +54,13 @@ test('progress events are delivered as server-sent events', async t => {
   controller.abort();
   await reader.cancel().catch(() => undefined);
 });
+
+test('the output folder can be opened without accepting arbitrary paths', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'workstation-open-'));
+  const app = await buildApp({ ...await loadConfig(), stateDirectory: directory });
+  t.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
+  const response = await app.inject({ method: 'POST', url: '/api/output/open', headers: { host: '127.0.0.1:4318' } });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().opened, true);
+  assert.ok(String(response.json().directory).length > 0);
+});

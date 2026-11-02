@@ -136,6 +136,7 @@ test('media and document tools join the catalog and photo compression runs in th
   await page.locator('[name="path"]').fill('samples/photo.jpg');
   await runTool(page);
   await expect(page.locator('.result-body')).toContainText('压缩后体积');
+  await expect(page.getByRole('button', { name: '打开输出文件夹' })).toBeVisible();
   await openTool(page, 'doc_convert');
   await page.locator('[name="path"]').fill('samples/guide.pdf');
   await page.locator('[name="to"]').selectOption('markdown');

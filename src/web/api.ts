@@ -91,6 +91,17 @@ export function subscribeProgress(runId: string, onProgress: (progress: RunProgr
   return stop;
 }
 
+export async function openOutputFolder(): Promise<{ opened: boolean; message?: string }> {
+  try {
+    const response = await fetch('/api/output/open', { method: 'POST', headers: { Accept: 'application/json' } });
+    const data = await jsonResponse(response) as { opened?: boolean; error?: { message?: string } };
+    if (!response.ok) return { opened: false, message: data.error?.message ?? '无法打开输出目录。' };
+    return { opened: Boolean(data.opened) };
+  } catch {
+    return { opened: false, message: '无法连接本地服务，请确认服务已启动。' };
+  }
+}
+
 export function friendlyError(error: unknown): { message: string; code?: string } {
   if (error instanceof ApiError) return { message: error.message, code: error.code };
   return { message: '无法连接本地服务，请确认服务已启动，然后重试。' };

@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { defineTool } from '../core/define-tool.js';
 import { ToolError } from '../core/errors.js';
 import { writeUniqueFile } from '../core/file-access.js';
-import { awemeIdFrom, downloadMedia, fetchDouyinVideo, isShortLink, resolveShortLink } from './douyin-core.js';
+import { awemeIdFrom, downloadMedia, fetchDouyinVideo, isShortLink, resolveShortLink, selectDouyinSource } from './douyin-core.js';
 
 export const douyinVideoTool = defineTool({
   name: 'douyin_video',
@@ -14,6 +14,10 @@ export const douyinVideoTool = defineTool({
   fields: [
     { name: 'url', label: '作品链接或 ID', type: 'text', description: '例如 https://www.douyin.com/video/7699524083810599545' },
     { name: 'download', label: '保存到输出目录', type: 'checkbox', description: '不勾选时只返回直链，不写入文件。' },
+    { name: 'watermark', label: '水印处理', type: 'select', description: '平台同时提供无水印与带水印两个源，去除即改用无水印源。', options: [
+      { label: '去除水印（用无水印源）', value: 'remove' },
+      { label: '保留水印（用平台下载源）', value: 'keep' },
+    ] },
     { name: 'parts', label: '保存内容', type: 'select', description: '音轨来自作品音乐/原声的纯音频地址。', options: [
       { label: '仅视频', value: 'video' },
       { label: '仅音频（音轨分离）', value: 'audio' },
@@ -27,6 +31,7 @@ export const douyinVideoTool = defineTool({
     url: z.string().min(1),
     download: z.boolean().default(false),
     parts: z.enum(['video', 'audio', 'both']).default('video'),
+    watermark: z.enum(['remove', 'keep']).default('remove'),
   }),
   outputSchema: z.strictObject({
     awemeId: z.string(),
@@ -35,6 +40,8 @@ export const douyinVideoTool = defineTool({
     durationMs: z.number(),
     cover: z.string(),
     createdAt: z.string().nullable(),
+    source: z.enum(['no-watermark', 'watermarked']),
+    noWatermarkUrl: z.string().nullable(),
     videoUrl: z.string(),
     watermarkedUrl: z.string().nullable(),
     audioUrl: z.string().nullable(),
@@ -45,7 +52,7 @@ export const douyinVideoTool = defineTool({
     savedAudioFile: z.strictObject({ relativePath: z.string(), bytes: z.number() }).nullable(),
     warnings: z.array(z.string()),
   }),
-  async execute({ url, download, parts }, ctx) {
+  async execute({ url, download, parts, watermark }, ctx) {
     if (!ctx.http) throw new ToolError('ACCESS_DENIED', '当前环境未启用网络访问。');
     let target = url.trim();
     if (isShortLink(target)) target = await resolveShortLink(ctx.http, target, ctx);
@@ -53,9 +60,12 @@ export const douyinVideoTool = defineTool({
     ctx.reportProgress?.({ phase: '解析作品信息' });
     const video = await fetchDouyinVideo(awemeId, ctx);
     const warnings: string[] = [];
-    const videoUrl = video.playUrls[0] ?? video.watermarkUrls[0] ?? '';
+    const noWatermarkUrl = video.playUrls[0] ?? null;
+    const watermarkedUrl = video.watermarkUrls[0] ?? null;
+    const { url: videoUrl, source } = selectDouyinSource(video, watermark);
     if (!videoUrl) throw new ToolError('FILE_NOT_FOUND', '该作品没有返回可用的视频地址，可能是图文作品或已受限。');
-    if (!video.playUrls.length && video.watermarkUrls.length) warnings.push('该作品只返回了带水印地址，请改用“抖音去水印”工具。');
+    if (!noWatermarkUrl && watermarkedUrl) warnings.push('该作品只返回了带水印地址，已按当前设置使用带水印源。');
+    if (source === 'watermarked') warnings.push('当前保留水印：使用的是平台下载源，画面右下角带水印。');
     const audioUrl = video.audioUrls[0] ?? null;
     if (parts !== 'video' && !audioUrl) warnings.push('该作品没有返回独立音轨地址。');
     let savedFile: { relativePath: string; bytes: number } | null = null;
@@ -80,7 +90,9 @@ export const douyinVideoTool = defineTool({
       cover: video.cover,
       createdAt: video.createdAt,
       videoUrl,
-      watermarkedUrl: video.watermarkUrls[0] ?? null,
+      source,
+      noWatermarkUrl,
+      watermarkedUrl,
       audioUrl,
       audioTitle: video.audioTitle,
       audioDurationMs: video.audioDurationMs,

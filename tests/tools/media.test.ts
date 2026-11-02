@@ -7,7 +7,7 @@ import mammoth from 'mammoth';
 import { z } from 'zod';
 import type { PublicHttp, ToolContext } from '../../src/contracts/tool.js';
 import { bilibiliVideoTool } from '../../src/tools/bilibili-video.js';
-import { awemeIdFrom, isShortLink } from '../../src/tools/douyin-core.js';
+import { awemeIdFrom, isShortLink, selectDouyinSource } from '../../src/tools/douyin-core.js';
 import { douyinNoWatermarkTool } from '../../src/tools/douyin-nowatermark.js';
 import { douyinVideoTool } from '../../src/tools/douyin-video.js';
 import { docConvertTool } from '../../src/tools/doc-convert.js';
@@ -109,7 +109,7 @@ test('Bilibili extraction reads the video metadata and stream from the API', asy
       return { finalUrl: url, status: 200, data: { code: 0, data: { quality: 64, timelength: 126000, durl: [{ url: 'https://cdn/video.mp4', size: 1024 }] } } };
     },
   });
-  const result = await bilibiliVideoTool.execute({ url: 'https://www.bilibili.com/video/BV1ugxq6HEfH', download: false, parts: 'video' }, context({ http }));
+  const result = await bilibiliVideoTool.execute({ url: 'https://www.bilibili.com/video/BV1ugxq6HEfH', download: false, parts: 'video', watermark: 'keep' }, context({ http }));
   assert.equal(result.bvid, 'BV1ugxq6HEfH');
   assert.equal(result.title, '示例标题');
   assert.equal(result.owner, '作者');
@@ -119,7 +119,7 @@ test('Bilibili extraction reads the video metadata and stream from the API', asy
 
 test('Bilibili extraction rejects identifiers that are not video numbers', async () => {
   await assert.rejects(
-    bilibiliVideoTool.execute({ url: 'not-a-video', download: false, parts: 'video' }, context({ http: fakeHttp() })),
+    bilibiliVideoTool.execute({ url: 'not-a-video', download: false, parts: 'video', watermark: 'keep' }, context({ http: fakeHttp() })),
     /BV 号/,
   );
 });
@@ -137,7 +137,7 @@ test('Bilibili audio separation exposes the DASH audio stream and saves it besid
     getBinary: async (url) => ({ finalUrl: url, status: 200, contentType: 'video/mp4', bytes: new Uint8Array([1, 2, 3]) }),
   });
   const writer = createFileWriter(directory, new AbortController().signal, limits.outputBytes);
-  const result = await bilibiliVideoTool.execute({ url: 'BV1ugxq6HEfH', download: true, parts: 'both' }, context({ http, output: writer }));
+  const result = await bilibiliVideoTool.execute({ url: 'BV1ugxq6HEfH', download: true, parts: 'both', watermark: 'keep' }, context({ http, output: writer }));
   assert.equal(result.audioUrl, 'https://cdn:8082/audio.m4s');
   assert.equal(result.savedFile?.relativePath, 'BV1ugxq6HEfH.mp4');
   assert.equal(result.savedAudioFile?.relativePath, 'BV1ugxq6HEfH-audio.m4a');
@@ -148,7 +148,7 @@ test('Douyin tools expose the work audio track for separated saving', () => {
   assert.equal(douyinVideoTool.inputSchema.safeParse({ url: '1', parts: 'audio' }).success, true);
   assert.equal(douyinVideoTool.outputSchema.safeParse({
     awemeId: '1', description: '', author: '', durationMs: 1, cover: '', createdAt: null,
-    videoUrl: 'https://v/1.mp4', watermarkedUrl: null, audioUrl: 'https://m/1.mp3', audioTitle: '原声',
+    videoUrl: 'https://v/1.mp4', source: 'no-watermark', noWatermarkUrl: 'https://v/1.mp4', watermarkedUrl: null, audioUrl: 'https://m/1.mp3', audioTitle: '原声',
     audioDurationMs: 1000, imageUrls: [], savedFile: null, savedAudioFile: null, warnings: [],
   }).success, true);
   assert.equal(douyinNoWatermarkTool.inputSchema.safeParse({ url: '1', parts: 'both' }).success, true);
@@ -247,4 +247,35 @@ test('XLSX analysis refuses files that are not workbooks', async () => {
     xlsxSummaryTool.execute({ path: 'samples/sales.csv', maxRows: 100, sheet: undefined }, context({ files: { readBytes: async () => new Uint8Array() } as never })),
     /\.xlsx/,
   );
+});
+
+test('the Douyin watermark switch picks the clean or the watermarked source', () => {
+  const video = {
+    awemeId: '1', description: '', author: '', authorId: '', durationMs: 1, cover: '',
+    playUrls: ['https://cdn/clean.mp4'], watermarkUrls: ['https://cdn/marked.mp4'],
+    imageUrls: [], audioUrls: [], audioTitle: '', audioDurationMs: 0, createdAt: null,
+  };
+  const clean = selectDouyinSource(video, 'remove');
+  assert.equal(clean.source, 'no-watermark');
+  assert.equal(clean.url, 'https://cdn/clean.mp4');
+  const marked = selectDouyinSource(video, 'keep');
+  assert.equal(marked.source, 'watermarked');
+  assert.equal(marked.url, 'https://cdn/marked.mp4');
+});
+
+test('the Bilibili watermark switch prefers the original DASH stream', async () => {
+  const requested: string[] = [];
+  const http = fakeHttp({
+    getRaw: async () => ({ finalUrl: 'https://api.bilibili.com/x/frontend/finger/spi', status: 200, contentType: 'application/json', bytes: new Uint8Array(), setCookie: ['buvid3=abc; Path=/'] }),
+    getJson: async (url) => {
+      requested.push(url);
+      if (url.includes('/view')) return { finalUrl: url, status: 200, data: { code: 0, data: { bvid: 'BV1ugxq6HEfH', title: '示例', duration: 126, owner: { name: '作者' }, pic: 'https://cover', pages: [{ cid: 42, page: 1 }] } } };
+      if (url.includes('fnval=0')) return { finalUrl: url, status: 200, data: { code: 0, data: { quality: 64, timelength: 126000, durl: [{ url: 'https://cdn/video.mp4', size: 10 }] } } };
+      return { finalUrl: url, status: 200, data: { code: 0, data: { dash: { duration: 126, video: [{ id: 80, codecs: 'avc1', bandwidth: 900, baseUrl: 'https://cdn/original.m4s' }], audio: [{ id: 30232, codecs: 'mp4a', bandwidth: 5, baseUrl: 'https://cdn/audio.m4s' }] } } } };
+    },
+  });
+  const result = await bilibiliVideoTool.execute({ url: 'BV1ugxq6HEfH', download: false, parts: 'video', watermark: 'remove' }, context({ http }));
+  assert.equal(result.source, 'original-dash');
+  assert.ok(result.streams.some(stream => stream.url === 'https://cdn/original.m4s'));
+  assert.ok(result.warnings.some(warning => warning.includes('接口不提供')));
 });

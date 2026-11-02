@@ -6,6 +6,7 @@ import { projectRoot, type WorkstationConfig } from '../../core/config.js';
 import type { Runtime } from '../../core/runtime.js';
 import type { ErrorCode } from '../../contracts/run.js';
 import type { IntegrationInfo } from '../../contracts/tool.js';
+import { openDirectory } from '../../core/opener.js';
 
 const statuses: Record<ErrorCode, number> = { TOOL_NOT_FOUND: 404, INVALID_INPUT: 400, ACCESS_DENIED: 403, FILE_NOT_FOUND: 404, UNSUPPORTED_FORMAT: 422, LIMIT_EXCEEDED: 413, BUSY: 429, NETWORK_ERROR: 502, TIMEOUT: 504, CANCELLED: 408, TOOL_FAILED: 500 };
 export function registerRoutes(app: FastifyInstance, config: WorkstationConfig, runtime: Runtime) {
@@ -28,6 +29,11 @@ export function registerRoutes(app: FastifyInstance, config: WorkstationConfig, 
       if (reply.raw.destroyed) return reply;
       return reply.code(result.ok ? 200 : statuses[result.error.code]).send(result);
     } finally { reply.raw.removeListener('close', onClose); }
+  });
+  app.post('/api/output/open', async (_request, reply) => {
+    const result = openDirectory(config.outputDirectory);
+    if (!result.opened) return reply.code(500).send({ error: { code: 'TOOL_FAILED', message: result.reason ?? '无法打开输出目录。' } });
+    return { opened: true, directory: config.outputDirectory };
   });
   app.get<{ Params: { runId: string } }>('/api/runs/:runId/progress', async (request, reply) => {
     const progress = runtime.executor.progress.get(request.params.runId);

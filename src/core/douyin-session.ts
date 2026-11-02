@@ -133,10 +133,18 @@ export async function requestDetail(session: DouyinSession, awemeId: string, htt
   let url = `${detailEndpoint}?${signed.searchParams.toString()}&a_bogus=${encodeURIComponent(signed.aBogus)}&verifyFp=${encodeURIComponent(session.verifyFp)}&fp=${encodeURIComponent(session.verifyFp)}`;
   if (session.uifid) url = signWebUrl(url, { uifid: session.uifid, timestamp });
   const cookie = Object.entries(session.cookies).map(([name, value]) => `${name}=${value}`).join('; ');
-  const response = await http.getJson(url, ctx.signal, {
-    headers: { 'user-agent': userAgent, referer: 'https://www.douyin.com/', accept: 'application/json, text/plain, */*', cookie },
-    maxBytes: ctx.limits.webBytes * 16,
-  });
+  let response;
+  try {
+    response = await http.getJson(url, ctx.signal, {
+      headers: { 'user-agent': userAgent, referer: 'https://www.douyin.com/', accept: 'application/json, text/plain, */*', cookie },
+      maxBytes: ctx.limits.webBytes * 16,
+    });
+  } catch (error) {
+    if (error instanceof ToolError && error.code === 'UNSUPPORTED_FORMAT') {
+      throw new ToolError('NETWORK_ERROR', '抖音接口未返回 JSON 数据，通常是平台对本机发起了风控限流，请稍后重试。');
+    }
+    throw error;
+  }
   const data = response.data as { aweme_detail?: Record<string, unknown> } | null;
   return { ok: Boolean(data?.aweme_detail), awemeDetail: data?.aweme_detail, status: response.status };
 }
