@@ -60,9 +60,10 @@ function OutputFolderButton() {
   </div>;
 }
 
-export function ResultPanel({ tool, result, status, error, retry, progress }: {
+export function ResultPanel({ tool, result, status, error, retry, progress, restored, onRestore }: {
   tool: string; result?: ToolResult; status: 'idle' | 'running' | 'done' | 'cancelled';
   error?: { message: string; code?: string }; retry: () => void; progress?: RunProgress;
+  restored?: boolean; onRestore?: () => void;
 }) {
   const [view, setView] = useState<'preview' | 'json'>('preview');
   const [downloadError, setDownloadError] = useState(false);
@@ -90,10 +91,11 @@ export function ResultPanel({ tool, result, status, error, retry, progress }: {
         {progress ? <ProgressView progress={progress} /> : <><span className="running-orbit"><LoaderCircle size={26} className="spin" aria-hidden="true" /></span><h3>工具正在处理中</h3><p>结果会显示在这里，你也可以随时取消等待。</p></>}
       </div>}
       {status === 'cancelled' && <div role="status"><EmptyState title="已取消等待">当前请求已中止。实际执行状态可在执行记录中查看。</EmptyState></div>}
-      {status === 'idle' && <EmptyState title="准备好了，运行看看">填写左侧参数，或从一个示例开始。<br />结果、数据预览和导出都会出现在这里。</EmptyState>}
+      {status === 'idle' && <EmptyState title="准备好了，运行看看">填写左侧参数，或从一个示例开始。<br />结果、数据预览和导出都会出现在这里。
+        {onRestore && <button className="button button-secondary button-small" onClick={onRestore}>查看上次运行结果</button>}</EmptyState>}
       {error && <ErrorNotice {...error} retry={retry} retryLabel="重试运行" />}
       {result && <>
-        {result.ok ? <div className="result-success" role="status"><CheckCircle2 size={17} aria-hidden="true" /><strong>执行成功</strong><span>{formatDuration(result.meta.durationMs)}</span></div>
+        {result.ok ? <div className="result-success" role="status"><CheckCircle2 size={17} aria-hidden="true" /><strong>执行成功</strong><span>{formatDuration(result.meta.durationMs)}</span>{restored && <em>上次运行的结果</em>}</div>
           : <><ErrorNotice message={result.error.message} code={result.error.code} retry={retry} retryLabel="重试运行" />
             {!!result.error.details?.length && <ul className="validation-list">{result.error.details.map((detail, index) => <li key={index}><code>{detail.path}</code>：{detail.message}</li>)}</ul>}</>}
         <Warnings warnings={warnings} />

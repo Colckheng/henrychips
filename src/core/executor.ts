@@ -15,8 +15,16 @@ export interface RunOptions {
   runId?: string;
 }
 
+interface StoredResult {
+  result: ToolResult;
+  at: number;
+}
+
 export class ToolExecutor {
   private active = 0;
+  private readonly running = new Map<string, AbortController>();
+  private readonly results = new Map<string, StoredResult>();
+  private readonly latest = new Map<string, { runId: string; at: number }>();
   readonly progress = new ProgressStore();
   constructor(
     readonly registry: ToolRegistry,
@@ -25,12 +33,51 @@ export class ToolExecutor {
     private readonly services: { http?: PublicHttp; probes?: ProcessProbe } = {},
   ) {}
 
+  /** Cancels a run that is still in flight. Used by the explicit cancel route. */
+  cancelRun(runId: string): boolean {
+    const controller = this.running.get(runId);
+    if (!controller) return false;
+    controller.abort();
+    return true;
+  }
+
+  /** Returns a finished result so it can be shown again after the page closed. */
+  getResult(runId: string): ToolResult | undefined {
+    this.pruneResults();
+    return this.results.get(runId)?.result;
+  }
+
+  /** The most recent run of a tool, so a reopened page can pick it up. */
+  latestRun(tool: string): { runId: string; at: number } | undefined {
+    this.pruneResults();
+    return this.latest.get(tool);
+  }
+
+  private pruneResults(): void {
+    const limit = Date.now() - 12 * 60 * 60 * 1000;
+    for (const [runId, entry] of this.results) {
+      if (entry.at < limit) this.results.delete(runId);
+    }
+    while (this.results.size > 50) {
+      const oldest = [...this.results.entries()].sort((left, right) => left[1].at - right[1].at)[0];
+      if (!oldest) break;
+      this.results.delete(oldest[0]);
+    }
+  }
+
   async run(name: string, input: unknown, options: RunOptions): Promise<ToolResult> {
     const start = performance.now();
     const runId = options.runId ?? randomUUID();
     const meta: RunMeta = { runId, tool: name, source: options.source, startedAt: new Date().toISOString(), durationMs: 0, warnings: [] };
     const timeout = new AbortController();
-    const signal = options.signal ? AbortSignal.any([timeout.signal, options.signal]) : timeout.signal;
+    const controller = new AbortController();
+    // A caller signal (CLI interrupt, MCP cancel) still cancels the work. A
+    // browser disconnect does not: the run keeps going and its result is kept.
+    const signal = options.signal
+      ? AbortSignal.any([timeout.signal, controller.signal, options.signal])
+      : AbortSignal.any([timeout.signal, controller.signal]);
+    this.running.set(runId, controller);
+    this.latest.set(name, { runId, at: Date.now() });
     let timer: ReturnType<typeof setTimeout> | undefined;
     let occupied = false;
     let result: ToolResult;
@@ -62,7 +109,7 @@ export class ToolExecutor {
       result = { ok: true, data, meta };
     } catch (error) {
       const failure = signal.aborted
-        ? timeout.signal.aborted && !options.signal?.aborted
+        ? timeout.signal.aborted && !controller.signal.aborted && !options.signal?.aborted
           ? new ToolError('TIMEOUT', '执行超时，请缩小输入规模后重试。')
           : new ToolError('CANCELLED', '本次执行已取消。')
         : error instanceof ToolError ? error : new ToolError('TOOL_FAILED', '工具执行失败，请检查输入后重试。');
@@ -71,8 +118,11 @@ export class ToolExecutor {
       if (timer) clearTimeout(timer);
       if (occupied) this.active--;
       meta.durationMs = Math.round((performance.now() - start) * 100) / 100;
+      this.running.delete(runId);
     }
     if (started) this.progress.finish(runId, result.ok ? 'succeeded' : result.error.code === 'CANCELLED' ? 'cancelled' : 'failed', result.ok ? '已完成' : '失败');
+    this.results.set(runId, { result, at: Date.now() });
+    this.pruneResults();
     try {
       await this.store.append({ runId: meta.runId, tool: name, source: options.source, status: result.ok ? 'succeeded' : result.error.code === 'CANCELLED' ? 'cancelled' : 'failed', startedAt: meta.startedAt, durationMs: meta.durationMs, errorCode: result.ok ? null : result.error.code });
     } catch {

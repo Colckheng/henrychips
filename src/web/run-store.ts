@@ -1,11 +1,12 @@
 import { useSyncExternalStore } from 'react';
 import type { ToolResult } from '../contracts/run.js';
-import { friendlyError, runApi, subscribeProgress, type RunProgress } from './api.js';
+import { cancelRunApi, fetchRunResult, friendlyError, runApi, subscribeProgress, type RunProgress } from './api.js';
 
 export type RunStatus = 'running' | 'done' | 'cancelled';
 
 export interface RunEntry {
   tool: string;
+  restored?: boolean;
   requestId: string;
   status: RunStatus;
   result?: ToolResult;
@@ -15,11 +16,13 @@ export interface RunEntry {
 }
 
 interface InternalEntry extends RunEntry {
+  restored?: boolean;
   controller: AbortController;
   unsubscribe?: () => void;
 }
 
 const runs = new Map<string, InternalEntry>();
+const previous = new Map<string, { runId: string; at: number }>();
 const listeners = new Set<() => void>();
 const recoveryKey = 'henry.active-runs';
 let cache: RunEntry[] = [];
@@ -64,24 +67,44 @@ function entryOf(tool: string): InternalEntry | undefined {
  * request and its progress alive; the state is restored when the user comes
  * back to the tool.
  */
+/** Subscribes to progress and fetches the finished result when the run ends. */
+function attach(entry: InternalEntry): void {
+  entry.unsubscribe?.();
+  entry.unsubscribe = subscribeProgress(entry.requestId, progress => {
+    entry.progress = progress;
+    if (progress.status === 'running') { emit(); return; }
+    if (!entry.result) {
+      void fetchRunResult(entry.requestId).then(result => {
+        if (!result) return;
+        entry.result = result;
+        if (entry.status !== 'cancelled') entry.status = 'done';
+        emit();
+      });
+    }
+    emit();
+  });
+}
+
 export function startRun(tool: string, input: Record<string, unknown>): void {
-  const previous = entryOf(tool);
-  previous?.unsubscribe?.();
-  previous?.controller.abort();
+  const earlier = entryOf(tool);
+  if (earlier && earlier.status === 'running') {
+    // Supersede the earlier run on the server; its result stays available.
+    void cancelRunApi(earlier.requestId);
+  }
   const controller = new AbortController();
   const entry: InternalEntry = { tool, requestId: newRequestId(), status: 'running', controller, startedAt: Date.now() };
   runs.set(tool, entry);
+  previous.set(tool, { runId: entry.requestId, at: entry.startedAt });
   persistRecovery();
   emit();
-  entry.unsubscribe = subscribeProgress(entry.requestId, progress => {
-    entry.progress = progress;
-    if (progress.status !== 'running') entry.progress = progress;
-    emit();
-  });
+  attach(entry);
   void runApi(tool, input, controller.signal, entry.requestId)
-    .then(result => { entry.status = 'done'; entry.result = result; })
+    .then(result => {
+      if (entry.status !== 'cancelled') entry.status = 'done';
+      entry.result = result;
+    })
     .catch((error: unknown) => {
-      if (controller.signal.aborted) { entry.status = 'cancelled'; return; }
+      if (controller.signal.aborted || entry.status === 'cancelled') { entry.status = 'cancelled'; return; }
       entry.status = 'done';
       entry.error = friendlyError(error);
     })
@@ -96,7 +119,8 @@ export function startRun(tool: string, input: Record<string, unknown>): void {
 export function cancelRun(tool: string): void {
   const entry = entryOf(tool);
   if (!entry) return;
-  entry.controller.abort();
+  // Cancelling goes through the server: the run lives there, not in this tab.
+  void cancelRunApi(entry.requestId);
   entry.status = 'cancelled';
   entry.unsubscribe?.();
   entry.unsubscribe = undefined;
@@ -118,6 +142,47 @@ export function useRunEntries(): RunEntry[] {
   return useSyncExternalStore(subscribe, () => cache, () => cache);
 }
 
+/** Adopts a run that the server kept going after the page was closed. */
+export async function adoptLatestRun(tool: string): Promise<void> {
+  if (runs.has(tool)) return;
+  try {
+    const response = await fetch(`/api/runs/latest?tool=${encodeURIComponent(tool)}`, { headers: { Accept: 'application/json' } });
+    if (!response.ok) return;
+    const payload = await response.json() as { runId: string | null; at: number | null; status: string; progress?: RunProgress; result?: ToolResult };
+    if (!payload?.runId || runs.has(tool)) return;
+    previous.set(tool, { runId: payload.runId, at: payload.at ?? Date.now() });
+    if (payload.status !== 'running') { emit(); return; }
+    const controller = new AbortController();
+    const entry: InternalEntry = {
+      tool,
+      requestId: payload.runId,
+      status: 'running',
+      controller,
+      startedAt: payload.at ?? Date.now(),
+      progress: payload.progress,
+    };
+    runs.set(tool, entry);
+    attach(entry);
+    emit();
+  } catch { /* nothing to adopt */ }
+}
+
+/** Loads the result of the previous run so it can be shown again. */
+export async function loadPreviousResult(tool: string): Promise<void> {
+  const known = previous.get(tool);
+  const runId = known?.runId;
+  if (!runId) return;
+  const result = await fetchRunResult(runId);
+  if (!result) return;
+  const controller = new AbortController();
+  runs.set(tool, { tool, requestId: runId, status: 'done', controller, startedAt: known?.at ?? Date.now(), result, restored: true });
+  emit();
+}
+
+export function hasPreviousRun(tool: string): boolean {
+  return previous.has(tool);
+}
+
 /** Re-attaches to runs that were still going when the page was reloaded. */
 export async function recoverRuns(): Promise<void> {
   let stored: Array<{ tool: string; requestId: string }> = [];
@@ -127,14 +192,24 @@ export async function recoverRuns(): Promise<void> {
     if (!item?.tool || !item.requestId || runs.has(item.tool)) continue;
     try {
       const response = await fetch(`/api/runs/${encodeURIComponent(item.requestId)}/progress`, { headers: { Accept: 'application/json' } });
-      if (!response.ok) continue;
-      const progress = await response.json() as RunProgress;
-      if (progress.status !== 'running') continue;
-      const controller = new AbortController();
-      const entry: InternalEntry = { tool: item.tool, requestId: item.requestId, status: 'running', controller, startedAt: Date.now(), progress };
-      runs.set(item.tool, entry);
-      entry.unsubscribe = subscribeProgress(item.requestId, update => { entry.progress = update; emit(); });
-      emit();
+      if (response.ok) {
+        const progress = await response.json() as RunProgress;
+        if (progress.status === 'running') {
+          const controller = new AbortController();
+          const entry: InternalEntry = { tool: item.tool, requestId: item.requestId, status: 'running', controller, startedAt: Date.now(), progress };
+          runs.set(item.tool, entry);
+          attach(entry);
+          emit();
+          continue;
+        }
+      }
+      // The run finished while the page was closed: pick its result back up.
+      const result = await fetchRunResult(item.requestId);
+      if (result) {
+        const controller = new AbortController();
+        runs.set(item.tool, { tool: item.tool, requestId: item.requestId, status: 'done', controller, startedAt: Date.now(), result });
+        emit();
+      }
     } catch { /* the run is gone */ }
   }
 }

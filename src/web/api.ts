@@ -91,6 +91,24 @@ export function subscribeProgress(runId: string, onProgress: (progress: RunProgr
   return stop;
 }
 
+export async function cancelRunApi(runId: string): Promise<boolean> {
+  try {
+    const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST', keepalive: true, headers: { Accept: 'application/json' } });
+    if (!response.ok) return false;
+    const data = await jsonResponse(response) as { cancelled?: boolean };
+    return Boolean(data.cancelled);
+  } catch { return false; }
+}
+
+export async function fetchRunResult(runId: string): Promise<ToolResult | undefined> {
+  try {
+    const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/result`, { headers: { Accept: 'application/json' } });
+    if (!response.ok) return undefined;
+    const data = await jsonResponse(response);
+    return isToolResult(data) ? data : undefined;
+  } catch { return undefined; }
+}
+
 export async function openOutputFolder(): Promise<{ opened: boolean; message?: string }> {
   try {
     const response = await fetch('/api/output/open', { method: 'POST', headers: { Accept: 'application/json' } });

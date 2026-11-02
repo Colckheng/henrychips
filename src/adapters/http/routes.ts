@@ -21,19 +21,34 @@ export function registerRoutes(app: FastifyInstance, config: WorkstationConfig, 
     if (request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') return reply.code(415).send({ error: { code: 'INVALID_INPUT', message: '请求必须使用 application/json。' } });
     const parsed = z.strictObject({ input: z.unknown().refine(v => v !== undefined), requestId: z.string().uuid().optional() }).safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: { code: 'INVALID_INPUT', message: '请求需要且仅允许 input 字段，可选 requestId。' } });
-    const controller = new AbortController();
-    const onClose = () => { if (!reply.raw.writableFinished) controller.abort(); };
-    reply.raw.once('close', onClose);
-    try {
-      const result = await runtime.executor.run(request.params.name, parsed.data.input, { source: 'web', signal: controller.signal, runId: parsed.data.requestId });
-      if (reply.raw.destroyed) return reply;
-      return reply.code(result.ok ? 200 : statuses[result.error.code]).send(result);
-    } finally { reply.raw.removeListener('close', onClose); }
+    // A closed browser tab no longer cancels the run: the work continues on the
+    // server and the result stays available for the caller to pick up later.
+    const result = await runtime.executor.run(request.params.name, parsed.data.input, { source: 'web', runId: parsed.data.requestId });
+    if (reply.raw.destroyed) return reply;
+    return reply.code(result.ok ? 200 : statuses[result.error.code]).send(result);
   });
   app.post('/api/output/open', async (_request, reply) => {
     const result = openDirectory(config.outputDirectory);
     if (!result.opened) return reply.code(500).send({ error: { code: 'TOOL_FAILED', message: result.reason ?? '无法打开输出目录。' } });
     return { opened: true, directory: config.outputDirectory };
+  });
+  app.post<{ Params: { runId: string } }>('/api/runs/:runId/cancel', async (request) => {
+    const cancelled = runtime.executor.cancelRun(request.params.runId);
+    return { cancelled };
+  });
+  app.get<{ Querystring: { tool?: string } }>('/api/runs/latest', async (request, reply) => {
+    const tool = request.query.tool;
+    if (!tool) return reply.code(400).send({ error: { code: 'INVALID_INPUT', message: '需要指定 tool 参数。' } });
+    const latest = runtime.executor.latestRun(tool);
+    if (!latest) return { runId: null, at: null, status: 'none', progress: null, result: null };
+    const progress = runtime.executor.progress.get(latest.runId);
+    const result = runtime.executor.getResult(latest.runId);
+    return { runId: latest.runId, at: latest.at, status: progress?.status ?? (result ? (result.ok ? 'succeeded' : 'failed') : 'running'), progress, result };
+  });
+  app.get<{ Params: { runId: string } }>('/api/runs/:runId/result', async (request, reply) => {
+    const result = runtime.executor.getResult(request.params.runId);
+    if (!result) return reply.code(404).send({ error: { code: 'TOOL_NOT_FOUND', message: '没有找到该运行的结果，可能从未开始或已过期。' } });
+    return result;
   });
   app.get<{ Params: { runId: string } }>('/api/runs/:runId/progress', async (request, reply) => {
     const progress = runtime.executor.progress.get(request.params.runId);

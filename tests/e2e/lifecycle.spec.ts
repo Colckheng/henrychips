@@ -13,7 +13,7 @@ test('schema defaults and blank optional numbers produce the expected PDF payloa
   expect((await sent).postDataJSON()).toMatchObject({ input: { path: 'samples/guide.pdf', startPage: 1 } });
 });
 
-test('cancelled requests cannot overwrite a newly started run', async ({ page }) => {
+test('a late response from an earlier run cannot overwrite the current result', async ({ page }) => {
   let release!: () => void;
   let ready!: () => void;
   let delivered!: () => void;
@@ -21,7 +21,7 @@ test('cancelled requests cannot overwrite a newly started run', async ({ page })
   const fetched = new Promise<void>(resolve => { ready = resolve; });
   const lateResponse = new Promise<void>(resolve => { delivered = resolve; });
   let first = true;
-  await page.route('**/api/tools/text_stats/run', async route => {
+  await page.route('**/api/tools/pdf_extract/run', async route => {
     if (!first) return route.continue();
     first = false;
     const response = await route.fetch();
@@ -30,18 +30,19 @@ test('cancelled requests cannot overwrite a newly started run', async ({ page })
     await route.fulfill({ response }).catch(() => undefined);
     delivered();
   });
-  await page.goto('/#/tools/text_stats');
-  await page.locator('[name="text"]').fill('old response');
+  await page.goto('/#/tools/pdf_extract');
+  await page.locator('[name="path"]').fill('samples/guide.pdf');
   await page.getByRole('button', { name: '运行工具', exact: true }).click();
   await fetched;
-  await page.getByRole('button', { name: '取消运行', exact: true }).click();
-  await expect(page.getByRole('status').filter({ hasText: '已取消等待' })).toBeVisible();
-  await page.locator('[name="text"]').fill('新文本');
+  await expect(page.getByRole('status').filter({ hasText: '执行成功' })).toBeVisible({ timeout: 30000 });
+  const firstRunId = await page.locator('.result-meta code').innerText();
   await page.getByRole('button', { name: '运行工具', exact: true }).click();
-  await expect(page.getByTestId('metric-characters')).toContainText('3');
+  await expect(page.getByRole('status').filter({ hasText: '执行成功' })).toBeVisible({ timeout: 30000 });
+  const secondRunId = await page.locator('.result-meta code').innerText();
+  expect(secondRunId).not.toBe(firstRunId);
   release();
   await lateResponse;
-  await expect(page.getByTestId('metric-characters')).toContainText('3');
+  await expect(page.locator('.result-meta code')).toHaveText(secondRunId);
 });
 
 test('switching tools discards late responses from the previous tool', async ({ page }) => {

@@ -47,7 +47,7 @@ function ToolWorkbench({ tool, example }: { tool: ToolDescription; example: bool
         </div>
       </form>
     </section><aside className="capability-note"><ShieldCheck size={19} aria-hidden="true" /><div><h3>本次工具能力</h3><p>{tool.capabilities.length ? tool.capabilities.map(capability => capabilityLabels[capability] ?? capability).join(' · ') : '无需访问文件、网络或外部进程。'}</p>{tool.fields.some(field => field.type === 'relative-path') && <small>文件路径以已配置的本地工作区为起点。</small>}</div></aside></div>
-      <ResultPanel tool={tool.name} result={execution.result} status={execution.status} error={execution.error} retry={retry} progress={execution.progress} />
+      <ResultPanel tool={tool.name} result={execution.result} status={execution.status} error={execution.error} retry={retry} progress={execution.progress} restored={execution.restored} onRestore={execution.restore} />
     </div>
   </div>;
 }
