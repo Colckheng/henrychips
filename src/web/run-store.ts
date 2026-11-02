@@ -121,6 +121,7 @@ export function cancelRun(tool: string): void {
   if (!entry) return;
   // Cancelling goes through the server: the run lives there, not in this tab.
   void cancelRunApi(entry.requestId);
+  entry.controller.abort();
   entry.status = 'cancelled';
   entry.unsubscribe?.();
   entry.unsubscribe = undefined;
@@ -151,7 +152,9 @@ export async function adoptLatestRun(tool: string): Promise<void> {
     const payload = await response.json() as { runId: string | null; at: number | null; status: string; progress?: RunProgress; result?: ToolResult };
     if (!payload?.runId || runs.has(tool)) return;
     previous.set(tool, { runId: payload.runId, at: payload.at ?? Date.now() });
-    if (payload.status !== 'running') { emit(); return; }
+    // Only a run the server still reports as running can be adopted; anything
+    // else is offered as a previous result instead.
+    if (payload.status !== 'running' || !payload.progress) { emit(); return; }
     const controller = new AbortController();
     const entry: InternalEntry = {
       tool,
@@ -161,6 +164,7 @@ export async function adoptLatestRun(tool: string): Promise<void> {
       startedAt: payload.at ?? Date.now(),
       progress: payload.progress,
     };
+    if (runs.has(tool)) return;
     runs.set(tool, entry);
     attach(entry);
     emit();
@@ -172,8 +176,13 @@ export async function loadPreviousResult(tool: string): Promise<void> {
   const known = previous.get(tool);
   const runId = known?.runId;
   if (!runId) return;
+  const current = entryOf(tool);
+  if (current && current.status === 'running') return;
   const result = await fetchRunResult(runId);
   if (!result) return;
+  // A newer run may have started while the result was loading.
+  const active = entryOf(tool);
+  if (active && active.status === 'running') return;
   const controller = new AbortController();
   runs.set(tool, { tool, requestId: runId, status: 'done', controller, startedAt: known?.at ?? Date.now(), result, restored: true });
   emit();
@@ -181,6 +190,11 @@ export async function loadPreviousResult(tool: string): Promise<void> {
 
 export function hasPreviousRun(tool: string): boolean {
   return previous.has(tool);
+}
+
+/** Reactive flag: true when the server holds an earlier run for this tool. */
+export function useHasPreviousRun(tool: string): boolean {
+  return useSyncExternalStore(subscribe, () => previous.has(tool), () => previous.has(tool));
 }
 
 /** Re-attaches to runs that were still going when the page was reloaded. */
@@ -194,7 +208,7 @@ export async function recoverRuns(): Promise<void> {
       const response = await fetch(`/api/runs/${encodeURIComponent(item.requestId)}/progress`, { headers: { Accept: 'application/json' } });
       if (response.ok) {
         const progress = await response.json() as RunProgress;
-        if (progress.status === 'running') {
+        if (progress.status === 'running' && !runs.has(item.tool)) {
           const controller = new AbortController();
           const entry: InternalEntry = { tool: item.tool, requestId: item.requestId, status: 'running', controller, startedAt: Date.now(), progress };
           runs.set(item.tool, entry);
@@ -205,9 +219,9 @@ export async function recoverRuns(): Promise<void> {
       }
       // The run finished while the page was closed: pick its result back up.
       const result = await fetchRunResult(item.requestId);
-      if (result) {
+      if (result && !runs.has(item.tool)) {
         const controller = new AbortController();
-        runs.set(item.tool, { tool: item.tool, requestId: item.requestId, status: 'done', controller, startedAt: Date.now(), result });
+        runs.set(item.tool, { tool: item.tool, requestId: item.requestId, status: 'done', controller, startedAt: Date.now(), result, restored: true });
         emit();
       }
     } catch { /* the run is gone */ }

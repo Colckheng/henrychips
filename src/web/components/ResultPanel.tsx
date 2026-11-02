@@ -35,8 +35,8 @@ function ResultView({ tool, data }: { tool: string; data: Record<string, unknown
 function ProgressView({ progress }: { progress: RunProgress }) {
   const percent = progress.percent;
   const width = percent === null ? '100%' : `${percent}%`;
-  return <div className="progress-view" role="status" aria-live="polite">
-    <div className="progress-head"><span className="progress-phase">{progress.phase}</span>
+  return <div className="progress-view">
+    <div className="progress-head" aria-live="polite"><span className="progress-phase">{progress.phase}</span>
       <span className="progress-percent">{percent === null ? '处理中' : `${percent}%`}</span></div>
     <div className="progress-track"><div className={percent === null ? 'progress-fill is-indeterminate' : 'progress-fill'} style={{ width }} /></div>
     {progress.steps.length > 1 && <ol className="progress-steps">{progress.steps.slice(-5).map((step, index) => (
@@ -94,7 +94,7 @@ export function ResultPanel({ tool, result, status, error, retry, progress, rest
       {status === 'idle' && <EmptyState title="准备好了，运行看看">填写左侧参数，或从一个示例开始。<br />结果、数据预览和导出都会出现在这里。
         {onRestore && <button className="button button-secondary button-small" onClick={onRestore}>查看上次运行结果</button>}</EmptyState>}
       {error && <ErrorNotice {...error} retry={retry} retryLabel="重试运行" />}
-      {result && <>
+      {result && status !== 'cancelled' && <>
         {result.ok ? <div className="result-success" role="status"><CheckCircle2 size={17} aria-hidden="true" /><strong>执行成功</strong><span>{formatDuration(result.meta.durationMs)}</span>{restored && <em>上次运行的结果</em>}</div>
           : <><ErrorNotice message={result.error.message} code={result.error.code} retry={retry} retryLabel="重试运行" />
             {!!result.error.details?.length && <ul className="validation-list">{result.error.details.map((detail, index) => <li key={index}><code>{detail.path}</code>：{detail.message}</li>)}</ul>}</>}

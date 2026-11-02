@@ -25,6 +25,7 @@ export class ToolExecutor {
   private readonly running = new Map<string, AbortController>();
   private readonly results = new Map<string, StoredResult>();
   private readonly latest = new Map<string, { runId: string; at: number }>();
+  private readonly cancelledBeforeStart = new Set<string>();
   readonly progress = new ProgressStore();
   constructor(
     readonly registry: ToolRegistry,
@@ -36,7 +37,12 @@ export class ToolExecutor {
   /** Cancels a run that is still in flight. Used by the explicit cancel route. */
   cancelRun(runId: string): boolean {
     const controller = this.running.get(runId);
-    if (!controller) return false;
+    if (!controller) {
+      // The cancel may arrive before the run registers; remember it so the run
+      // stops as soon as it starts.
+      this.cancelledBeforeStart.add(runId);
+      return false;
+    }
     controller.abort();
     return true;
   }
@@ -78,6 +84,7 @@ export class ToolExecutor {
       : AbortSignal.any([timeout.signal, controller.signal]);
     this.running.set(runId, controller);
     this.latest.set(name, { runId, at: Date.now() });
+    if (this.cancelledBeforeStart.delete(runId)) controller.abort();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let occupied = false;
     let result: ToolResult;

@@ -63,13 +63,18 @@ export function subscribeProgress(runId: string, onProgress: (progress: RunProgr
   const stop = () => {
     closed = true;
     source?.close();
-    if (timer) clearInterval(timer);
+    source = undefined;
+    if (timer) { clearInterval(timer); timer = undefined; }
   };
   const poll = async () => {
     try {
       const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/progress`, { headers: { Accept: 'application/json' } });
       if (!response.ok) return;
-      onProgress(await response.json() as RunProgress);
+      const progress = await response.json() as RunProgress;
+      if (closed) return;
+      onProgress(progress);
+      // A finished run needs no further polling.
+      if (progress.status !== 'running') stop();
     } catch { /* the run may already be finished */ }
   };
   if (typeof EventSource === 'undefined') {
@@ -80,12 +85,17 @@ export function subscribeProgress(runId: string, onProgress: (progress: RunProgr
   source = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`);
   source.onmessage = event => {
     if (closed) return;
-    try { onProgress(JSON.parse(event.data) as RunProgress); }
-    catch { /* ignore malformed frames */ }
+    try {
+      const progress = JSON.parse(event.data) as RunProgress;
+      onProgress(progress);
+      if (progress.status !== 'running') stop();
+    } catch { /* ignore malformed frames */ }
   };
   source.onerror = () => {
     if (closed) return;
     source?.close();
+    source = undefined;
+    if (timer) return;
     timer = setInterval(() => { if (!closed) void poll(); }, 700);
   };
   return stop;

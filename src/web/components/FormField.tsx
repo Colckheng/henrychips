@@ -6,7 +6,7 @@ export function FormField({ field, schema, required, value, error, onChange }: {
   field: FieldDefinition; schema?: PropertySchema; required: boolean;
   value: FormValues[string]; error?: string; onChange: (value: FormValues[string]) => void;
 }) {
-  const id = `field-${field.name}`;
+  const id = `field-${field.name.replace(/[^a-zA-Z0-9_-]+/g, '-')}`;
   const hintId = `${id}-hint`;
   const errorId = `${id}-error`;
   const hint = field.description ?? (field.type === 'relative-path' ? '相对于工作区的路径，例如 samples/sales.csv。' : undefined);

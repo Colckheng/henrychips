@@ -1,5 +1,5 @@
 import { ArrowLeft, ArrowUpRight, FlaskConical, LoaderCircle, Play, RotateCcw, Settings2, ShieldCheck, Square } from 'lucide-react';
-import { useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { ToolDescription } from '../../contracts/tool.js';
 import { useApi } from '../api.js';
 import { initialValues, propertiesOf, requiredFields, serializeInput } from '../form.js';
@@ -11,6 +11,7 @@ import { ResultPanel } from '../components/ResultPanel.js';
 
 function ToolWorkbench({ tool, example }: { tool: ToolDescription; example: boolean }) {
   const [values, setValues] = useState(() => initialValues(tool, example ? tool.examples[0]?.input : undefined));
+  const appliedExample = useRef(false);
   const [formNote, setFormNote] = useState('');
   const form = useRef<HTMLFormElement>(null);
   const execution = useToolRun(tool.name);
@@ -19,6 +20,9 @@ function ToolWorkbench({ tool, example }: { tool: ToolDescription; example: bool
   const properties = propertiesOf(tool);
   const required = requiredFields(tool);
   const busy = execution.status === 'running';
+  useEffect(() => {
+    if (example && !appliedExample.current) { appliedExample.current = true; setValues(initialValues(tool, tool.examples[0]?.input)); setFormNote(`已填入示例：${tool.examples[0]?.label ?? '示例'}`); }
+  }, [example, tool]);
   const details = execution.result && !execution.result.ok ? execution.result.error.details : undefined;
   const retry = () => form.current?.requestSubmit();
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -33,7 +37,7 @@ function ToolWorkbench({ tool, example }: { tool: ToolDescription; example: bool
     </div></header>
     <div className="detail-layout"><div className="input-column"><section className="panel" aria-labelledby="parameters-title">
       <div className="panel-heading"><div className="panel-title"><Settings2 size={18} aria-hidden="true" /><h2 id="parameters-title">输入参数</h2></div><span className="panel-step">01 / INPUT</span></div>
-      <form ref={form} onSubmit={submit} className="tool-form"><fieldset disabled={busy}><legend className="sr-only">工具参数</legend>
+      <form ref={form} onSubmit={submit} className="tool-form"><fieldset><legend className="sr-only">工具参数</legend>
         {tool.examples.length > 0 && <div className="example-picker"><span><FlaskConical size={15} aria-hidden="true" />从示例开始</span><div>{tool.examples.map((item, index) => <button type="button" className="example-button" key={`${index}-${item.label}`} aria-label={`填入示例：${item.label}`} onClick={() => { setValues(initialValues(tool, item.input)); setFormNote(`已填入示例：${item.label}`); }}>{item.label}<ArrowUpRight size={13} aria-hidden="true" /></button>)}</div></div>}
         <div className="fields-grid">{tool.fields.length ? tool.fields.map(field => <FormField key={field.name} field={field} schema={properties[field.name]} required={required.includes(field.name)} value={values[field.name] ?? ''}
           error={details?.find(detail => detail.path === field.name || detail.path === `input.${field.name}` || detail.path === `/${field.name}`)?.message}
@@ -47,7 +51,7 @@ function ToolWorkbench({ tool, example }: { tool: ToolDescription; example: bool
         </div>
       </form>
     </section><aside className="capability-note"><ShieldCheck size={19} aria-hidden="true" /><div><h3>本次工具能力</h3><p>{tool.capabilities.length ? tool.capabilities.map(capability => capabilityLabels[capability] ?? capability).join(' · ') : '无需访问文件、网络或外部进程。'}</p>{tool.fields.some(field => field.type === 'relative-path') && <small>文件路径以已配置的本地工作区为起点。</small>}</div></aside></div>
-      <ResultPanel tool={tool.name} result={execution.result} status={execution.status} error={execution.error} retry={retry} progress={execution.progress} restored={execution.restored} onRestore={execution.restore} />
+      <ResultPanel tool={tool.name} result={execution.result} status={execution.status} error={execution.error} retry={retry} progress={execution.progress} restored={execution.restored} onRestore={execution.hasPrevious ? execution.restore : undefined} />
     </div>
   </div>;
 }

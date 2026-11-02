@@ -1,6 +1,6 @@
 import { useCallback, useEffect } from 'react';
 import type { ToolResult } from '../contracts/run.js';
-import { adoptLatestRun, cancelRun, loadPreviousResult, startRun, useRunEntries } from './run-store.js';
+import { adoptLatestRun, cancelRun, loadPreviousResult, startRun, useHasPreviousRun, useRunEntries } from './run-store.js';
 import type { RunProgress } from './api.js';
 
 export function useToolRun(name: string) {
@@ -9,11 +9,12 @@ export function useToolRun(name: string) {
   const run = useCallback((input: Record<string, unknown>) => startRun(name, input), [name]);
   const cancel = useCallback(() => cancelRun(name), [name]);
   const restore = useCallback(() => loadPreviousResult(name), [name]);
+  const hasPrevious = useHasPreviousRun(name);
   // Pick up a run that the server kept going after the page was closed.
   useEffect(() => { void adoptLatestRun(name); }, [name]);
   const result = entry?.result as ToolResult | undefined;
   const error = entry?.error;
   const status = (entry?.status ?? 'idle') as 'idle' | 'running' | 'done' | 'cancelled';
   const progress = entry?.progress as RunProgress | undefined;
-  return { result, error, status, progress, restored: entry?.restored ?? false, run, cancel, restore };
+  return { result, error, status, progress, restored: entry?.restored ?? false, hasPrevious, run, cancel, restore };
 }
