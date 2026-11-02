@@ -1,10 +1,11 @@
-import { ArrowUpRight, Boxes, ChevronRight, Circle, History, LayoutGrid, PlugZap, SquareTerminal } from 'lucide-react';
+import { ArrowUpRight, Boxes, ChevronRight, Circle, History, LayoutGrid, LoaderCircle, PlugZap, SquareTerminal } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useEffect, useRef } from 'react';
 import type { ToolDescription } from '../../contracts/tool.js';
 import { useApi } from '../api.js';
 import { categoryEntries } from '../presentation.js';
 import { catalogLink, type Route } from '../router.js';
+import { useRunEntries } from '../run-store.js';
 
 const navigation = [
   { page: 'tools', label: '工具箱', icon: LayoutGrid },
@@ -20,6 +21,19 @@ function HealthStatus() {
     <span>{health.loading ? '检查本地服务…' : healthy ? '本地服务可用' : '本地服务不可用'}</span>
     {healthy && <span className="health-version">v{health.data?.version}</span>}
     {!health.loading && !healthy && <button onClick={health.reload} className="text-button">重试</button>}
+  </div>;
+}
+
+function RunningTasks() {
+  const entries = useRunEntries();
+  const running = entries.filter(entry => entry.status === 'running');
+  if (!running.length) return null;
+  return <div className="running-tasks" role="status" aria-live="polite">
+    {running.map(entry => <a key={entry.requestId} className="running-task" href={`#/tools/${encodeURIComponent(entry.tool)}`}>
+      <LoaderCircle size={13} className="spin" aria-hidden="true" />
+      <span>{entry.progress?.phase ?? '正在运行'}</span>
+      {entry.progress?.percent !== null && entry.progress?.percent !== undefined && <b>{entry.progress.percent}%</b>}
+    </a>)}
   </div>;
 }
 
@@ -59,7 +73,7 @@ export function Shell({ route, tools, children }: { route: Route; tools?: ToolDe
     </aside>
     <div className="workspace"><header className="topbar"><div className="breadcrumb"><span>工作空间</span><ChevronRight size={13} aria-hidden="true" /><strong>{title}</strong>
       {route.page === 'tool' && <><ChevronRight size={13} aria-hidden="true" /><span className="breadcrumb-detail">工具详情</span></>}
-    </div><HealthStatus /></header>
+    </div><div className="topbar-actions"><RunningTasks /><HealthStatus /></div></header>
       <main id="main-content" className="main-content" ref={main} tabIndex={-1}>{children}</main>
       <footer className="workspace-footer"><span>Henry 工作台 <span className="footer-divider">/</span> 为专注而留白</span><span>本地工具 · 简单有序</span></footer>
     </div>

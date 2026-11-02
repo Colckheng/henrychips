@@ -156,6 +156,21 @@ test('the catalog shows the new table tool and long runs report progress', async
   await expect(page.getByRole('status').filter({ hasText: '执行成功' })).toBeVisible({ timeout: 30000 });
 });
 
+test('switching pages keeps the running task alive and its progress visible', async ({ page }) => {
+  await openTool(page, 'pdf_extract');
+  await page.locator('[name="path"]').fill('samples/guide.pdf');
+  await page.getByRole('button', { name: '运行工具', exact: true }).click();
+  await expect(page.locator('.progress-view')).toBeVisible({ timeout: 15000 });
+  await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: 'AI 接入' }).click();
+  await expect(page.getByRole('heading', { name: 'AI 接入', exact: true })).toBeVisible();
+  await expect(page.locator('.running-task')).toBeVisible();
+  await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '工具箱' }).click();
+  await expect(page.getByTestId('tool-card').first()).toBeVisible();
+  await openTool(page, 'pdf_extract');
+  await expect(page.getByRole('status').filter({ hasText: '执行成功' })).toBeVisible({ timeout: 30000 });
+  await expect(page.locator('.result-body')).toContainText('Personal Workstation Guide');
+});
+
 test('PDF, environment and file preview execute without browser errors', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
