@@ -15,17 +15,16 @@ test('a run keeps going on the server after the client disconnects and its resul
   t.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
 
   const requestId = randomUUID();
-  const controller = new AbortController();
+  const ownerToken = 'owner-token-for-tests';
   const pending = app.inject({
     method: 'POST', url: '/api/tools/pdf_extract/run',
     headers: { ...headers, 'content-type': 'application/json' },
-    payload: { input: { path: 'samples/guide.pdf' }, requestId },
+    payload: { input: { path: 'samples/guide.pdf' }, requestId, ownerToken },
   }).catch(() => undefined);
   // The browser tab goes away while the tool is still working.
-  controller.abort();
   await new Promise(resolve => setTimeout(resolve, 3000));
 
-  const result = await app.inject({ url: `/api/runs/${requestId}/result`, headers });
+  const result = await app.inject({ url: `/api/runs/${requestId}/result`, headers: { ...headers, 'x-run-token': ownerToken } });
   assert.equal(result.statusCode, 200);
   const body = result.json();
   assert.equal(body.ok, true);
@@ -34,21 +33,20 @@ test('a run keeps going on the server after the client disconnects and its resul
   await pending;
 });
 
-test('a run can still be cancelled explicitly while it is in flight', async t => {
-  const directory = await mkdtemp(path.join(tmpdir(), 'workstation-cancel-run-'));
+test('only the owner of a run can read or cancel it', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'workstation-owner-'));
   const app = await buildApp({ ...await loadConfig(), stateDirectory: directory });
   t.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
   const requestId = randomUUID();
-  const pending = app.inject({
+  await app.inject({
     method: 'POST', url: '/api/tools/pdf_extract/run',
     headers: { ...headers, 'content-type': 'application/json' },
-    payload: { input: { path: 'samples/guide.pdf' }, requestId },
-  }).catch(() => undefined);
-  await new Promise(resolve => setTimeout(resolve, 50));
-  const cancelled = await app.inject({ method: 'POST', url: `/api/runs/${requestId}/cancel`, headers });
-  assert.equal(cancelled.statusCode, 200);
-  await pending;
-  const result = await app.inject({ url: `/api/runs/${requestId}/result`, headers });
-  assert.equal(result.statusCode, 200);
-  assert.equal(result.json().error.code, 'CANCELLED');
+    payload: { input: { path: 'samples/guide.pdf' }, requestId, ownerToken: 'owner-token-for-tests' },
+  });
+  const foreign = await app.inject({ url: `/api/runs/${requestId}/result`, headers: { ...headers, 'x-run-token': 'another-token' } });
+  assert.equal(foreign.statusCode, 404);
+  const foreignCancel = await app.inject({ method: 'POST', url: `/api/runs/${requestId}/cancel`, headers: { ...headers, 'x-run-token': 'another-token' } });
+  assert.equal(foreignCancel.json().cancelled, false);
+  const owner = await app.inject({ url: `/api/runs/${requestId}/result`, headers: { ...headers, 'x-run-token': 'owner-token-for-tests' } });
+  assert.equal(owner.statusCode, 200);
 });

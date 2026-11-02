@@ -44,10 +44,10 @@ export interface RunProgress {
   updatedAt: string;
 }
 
-export async function runApi(name: string, input: Record<string, unknown>, signal: AbortSignal, requestId: string): Promise<ToolResult> {
+export async function runApi(name: string, input: Record<string, unknown>, signal: AbortSignal, requestId: string, ownerToken: string): Promise<ToolResult> {
   const response = await fetch(`/api/tools/${encodeURIComponent(name)}/run`, {
     method: 'POST', signal, headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ input, requestId }),
+    body: JSON.stringify({ input, requestId, ownerToken }),
   });
   const data = await jsonResponse(response);
   if (isToolResult(data) && (!data.ok || response.ok)) return data;
@@ -101,18 +101,18 @@ export function subscribeProgress(runId: string, onProgress: (progress: RunProgr
   return stop;
 }
 
-export async function cancelRunApi(runId: string): Promise<boolean> {
+export async function cancelRunApi(runId: string, ownerToken: string): Promise<boolean> {
   try {
-    const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST', keepalive: true, headers: { Accept: 'application/json' } });
+    const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST', keepalive: true, headers: { Accept: 'application/json', 'x-run-token': ownerToken } });
     if (!response.ok) return false;
     const data = await jsonResponse(response) as { cancelled?: boolean };
     return Boolean(data.cancelled);
   } catch { return false; }
 }
 
-export async function fetchRunResult(runId: string): Promise<ToolResult | undefined> {
+export async function fetchRunResult(runId: string, ownerToken: string): Promise<ToolResult | undefined> {
   try {
-    const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/result`, { headers: { Accept: 'application/json' } });
+    const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/result`, { headers: { Accept: 'application/json', 'x-run-token': ownerToken } });
     if (!response.ok) return undefined;
     const data = await jsonResponse(response);
     return isToolResult(data) ? data : undefined;

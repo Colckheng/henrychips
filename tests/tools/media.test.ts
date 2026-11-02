@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import mammoth from 'mammoth';
@@ -278,4 +279,17 @@ test('the Bilibili watermark switch prefers the original DASH stream', async () 
   assert.equal(result.source, 'original-dash');
   assert.ok(result.streams.some(stream => stream.url === 'https://cdn/original.m4s'));
   assert.ok(result.warnings.some(warning => warning.includes('接口不提供')));
+});
+
+test('the output writer refuses to follow a link out of the output directory', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'workstation-writer-link-'));
+  const outside = await mkdtemp(path.join(tmpdir(), 'workstation-writer-outside-'));
+  t.after(async () => { await rm(directory, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); });
+  const link = path.join(directory, 'escape');
+  try { await symlink(outside, link, 'junction'); }
+  catch { t.skip('当前平台不支持创建联接点'); return; }
+  const writer = createFileWriter(directory, new AbortController().signal, limits.outputBytes);
+  await assert.rejects(writer.write('escape/pwned.txt', new Uint8Array([1])), /输出目录/);
+  const escaped = path.join(outside, 'pwned.txt');
+  assert.equal(existsSync(escaped), false);
 });

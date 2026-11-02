@@ -124,7 +124,13 @@ export function createFileWriter(root: string, signal: AbortSignal, maxBytes: nu
       if (bytes.byteLength > maxBytes) throw new ToolError('LIMIT_EXCEEDED', '输出文件超过写入大小限制。');
       const directory = path.dirname(absolute);
       await mkdir(directory, { recursive: true });
+      // A junction or symbolic link inside the output directory must not be able
+      // to redirect the write outside of it.
+      const realDirectory = await realpath(directory).catch(() => { throw new ToolError('ACCESS_DENIED', '输出目录不可用。'); });
+      const realRelative = path.relative(root, realDirectory);
+      if (realRelative.startsWith('..') || path.isAbsolute(realRelative)) throw new ToolError('ACCESS_DENIED', '输出路径必须位于输出目录内。');
       const existing = await lstat(absolute).catch(() => null);
+      if (existing?.isSymbolicLink()) throw new ToolError('ACCESS_DENIED', '输出目标不能是符号链接或联接点。');
       if (existing && !options?.overwrite) throw new ToolError('ACCESS_DENIED', '输出目录中已存在同名文件，请更换名称或勾选覆盖。');
       try {
         await writeFile(absolute, bytes, { flag: options?.overwrite ? 'w' : 'wx', mode: 0o600 });

@@ -36,10 +36,11 @@ test('a late response from an earlier run cannot overwrite the current result', 
   await fetched;
   await expect(page.getByRole('status').filter({ hasText: '执行成功' })).toBeVisible({ timeout: 30000 });
   const firstRunId = await page.locator('.result-meta code').innerText();
+  expect(firstRunId.trim()).not.toBe('');
   await page.getByRole('button', { name: '运行工具', exact: true }).click();
-  await expect(page.getByRole('status').filter({ hasText: '执行成功' })).toBeVisible({ timeout: 30000 });
+  // Wait until the panel shows the newer run before reading its identifier.
+  await expect(page.locator('.result-meta code')).not.toHaveText(firstRunId, { timeout: 30000 });
   const secondRunId = await page.locator('.result-meta code').innerText();
-  expect(secondRunId).not.toBe(firstRunId);
   release();
   await lateResponse;
   await expect(page.locator('.result-meta code')).toHaveText(secondRunId);

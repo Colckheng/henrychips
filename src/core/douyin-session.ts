@@ -33,7 +33,7 @@ export async function readSession(stateDirectory: string): Promise<DouyinSession
 
 export async function writeSession(stateDirectory: string, session: DouyinSession): Promise<void> {
   await mkdir(stateDirectory, { recursive: true });
-  await writeFile(sessionFile(stateDirectory), JSON.stringify(session, null, 2), 'utf8');
+  await writeFile(sessionFile(stateDirectory), JSON.stringify(session, null, 2), { encoding: 'utf8', mode: 0o600 });
 }
 
 /**

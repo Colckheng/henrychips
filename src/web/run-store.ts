@@ -25,6 +25,7 @@ const runs = new Map<string, InternalEntry>();
 const previous = new Map<string, { runId: string; at: number }>();
 const listeners = new Set<() => void>();
 const recoveryKey = 'henry.active-runs';
+const ownerTokenKey = 'henry.owner-token';
 let cache: RunEntry[] = [];
 
 function rebuild(): void {
@@ -48,6 +49,14 @@ function persistRecovery(): void {
       .map(entry => ({ tool: entry.tool, requestId: entry.requestId }));
     sessionStorage.setItem(recoveryKey, JSON.stringify(active));
   } catch { /* storage is unavailable in private mode */ }
+}
+
+export function ownerToken(): string {
+  try {
+    let token = sessionStorage.getItem(ownerTokenKey);
+    if (!token) { token = newRequestId(); sessionStorage.setItem(ownerTokenKey, token); }
+    return token;
+  } catch { return newRequestId(); }
 }
 
 export function newRequestId(): string {
@@ -74,7 +83,7 @@ function attach(entry: InternalEntry): void {
     entry.progress = progress;
     if (progress.status === 'running') { emit(); return; }
     if (!entry.result) {
-      void fetchRunResult(entry.requestId).then(result => {
+      void fetchRunResult(entry.requestId, ownerToken()).then(result => {
         if (!result) return;
         entry.result = result;
         if (entry.status !== 'cancelled') entry.status = 'done';
@@ -87,9 +96,11 @@ function attach(entry: InternalEntry): void {
 
 export function startRun(tool: string, input: Record<string, unknown>): void {
   const earlier = entryOf(tool);
-  if (earlier && earlier.status === 'running') {
+  if (earlier) {
     // Supersede the earlier run on the server; its result stays available.
-    void cancelRunApi(earlier.requestId);
+    if (earlier.status === 'running') void cancelRunApi(earlier.requestId, ownerToken());
+    earlier.unsubscribe?.();
+    earlier.unsubscribe = undefined;
   }
   const controller = new AbortController();
   const entry: InternalEntry = { tool, requestId: newRequestId(), status: 'running', controller, startedAt: Date.now() };
@@ -98,7 +109,7 @@ export function startRun(tool: string, input: Record<string, unknown>): void {
   persistRecovery();
   emit();
   attach(entry);
-  void runApi(tool, input, controller.signal, entry.requestId)
+  void runApi(tool, input, controller.signal, entry.requestId, ownerToken())
     .then(result => {
       if (entry.status !== 'cancelled') entry.status = 'done';
       entry.result = result;
@@ -120,7 +131,7 @@ export function cancelRun(tool: string): void {
   const entry = entryOf(tool);
   if (!entry) return;
   // Cancelling goes through the server: the run lives there, not in this tab.
-  void cancelRunApi(entry.requestId);
+  void cancelRunApi(entry.requestId, ownerToken());
   entry.controller.abort();
   entry.status = 'cancelled';
   entry.unsubscribe?.();
@@ -178,7 +189,7 @@ export async function loadPreviousResult(tool: string): Promise<void> {
   if (!runId) return;
   const current = entryOf(tool);
   if (current && current.status === 'running') return;
-  const result = await fetchRunResult(runId);
+  const result = await fetchRunResult(runId, ownerToken());
   if (!result) return;
   // A newer run may have started while the result was loading.
   const active = entryOf(tool);
@@ -218,7 +229,7 @@ export async function recoverRuns(): Promise<void> {
         }
       }
       // The run finished while the page was closed: pick its result back up.
-      const result = await fetchRunResult(item.requestId);
+      const result = await fetchRunResult(item.requestId, ownerToken());
       if (result && !runs.has(item.tool)) {
         const controller = new AbortController();
         runs.set(item.tool, { tool: item.tool, requestId: item.requestId, status: 'done', controller, startedAt: Date.now(), result, restored: true });

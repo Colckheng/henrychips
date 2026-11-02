@@ -63,6 +63,7 @@ export class ProgressStore {
   }
 
   finish(runId: string, status: RunProgress['status'], phase?: string): RunProgress | undefined {
+    this.sweep();
     const current = this.states.get(runId);
     if (!current) return undefined;
     current.status = status;
@@ -73,6 +74,7 @@ export class ProgressStore {
   }
 
   get(runId: string): RunProgress | undefined {
+    this.sweep();
     return this.states.get(runId);
   }
 

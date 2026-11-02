@@ -69,7 +69,7 @@ function pinnedLookup(host: string, addresses: LookupAddress[]): LookupFunction 
   // never a preliminary check followed by another unrestricted DNS resolution.
   const pinned = addresses.map(({ address, family }) => ({ address, family }));
   return (requestedHost, options, callback) => {
-    if (requestedHost.toLowerCase() !== host) {
+    if (requestedHost.toLowerCase().replace(/^[|]$/g, '') !== host) {
       callback(new ToolError('ACCESS_DENIED', '连接目标与已验证域名不符。'), '', 0);
       return;
     }
@@ -84,13 +84,13 @@ function pinnedLookup(host: string, addresses: LookupAddress[]): LookupFunction 
   };
 }
 
-const forbiddenHeaders = new Set(['host', 'content-length', 'connection', 'transfer-encoding', 'upgrade', 'proxy-authorization', 'proxy-connection', 'te', 'trailer']);
+const allowedHeaders = new Set(['user-agent', 'referer', 'origin', 'accept', 'accept-language', 'cookie', 'content-type']);
 
 export function safeRequestHeaders(headers?: Record<string, string>): Record<string, string> {
   const result: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers ?? {})) {
     const name = key.toLowerCase();
-    if (forbiddenHeaders.has(name) || name.startsWith(':') || !/^[a-z0-9-]+$/.test(name)) continue;
+    if (!allowedHeaders.has(name)) continue;
     if (/[\r\n]/.test(value)) continue;
     result[name] = value;
   }

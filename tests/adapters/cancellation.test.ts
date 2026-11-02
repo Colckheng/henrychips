@@ -36,14 +36,14 @@ test('a disconnected client no longer stops the work, but an explicit cancel doe
   const address = await app.listen({ host: '127.0.0.1', port: 0 });
   const req = httpRequest(`${address}/api/tools/wait_for_cancel/run`, { method: 'POST', headers: { host: '127.0.0.1:4318', 'content-type': 'application/json' } });
   req.on('error', () => {});
-  req.end('{"input":{},"requestId":"11111111-2222-4333-8444-555555555555"}');
+  req.end(JSON.stringify({ input: {}, requestId: '11111111-2222-4333-8444-555555555555', ownerToken: 'owner-token-for-tests' }));
   await entered.promise;
   req.destroy();
   await new Promise(resolve => setTimeout(resolve, 300));
   // The client is gone but the work continues on the server.
   assert.equal((await store.list(10)).runs.length, 0);
 
-  const cancel = await app.inject({ method: 'POST', url: '/api/runs/11111111-2222-4333-8444-555555555555/cancel', headers: { host: '127.0.0.1:4318' } });
+  const cancel = await app.inject({ method: 'POST', url: '/api/runs/11111111-2222-4333-8444-555555555555/cancel', headers: { host: '127.0.0.1:4318', 'x-run-token': 'owner-token-for-tests' } });
   assert.equal(cancel.statusCode, 200);
   assert.equal(cancel.json().cancelled, true);
   await recorded.promise;

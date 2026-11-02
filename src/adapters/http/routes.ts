@@ -8,6 +8,11 @@ import type { ErrorCode } from '../../contracts/run.js';
 import type { IntegrationInfo } from '../../contracts/tool.js';
 import { openDirectory } from '../../core/opener.js';
 
+function ownerTokenOf(request: { headers: Record<string, unknown> }): string | undefined {
+  const header = request.headers['x-run-token'];
+  return typeof header === 'string' ? header : undefined;
+}
+
 const statuses: Record<ErrorCode, number> = { TOOL_NOT_FOUND: 404, INVALID_INPUT: 400, ACCESS_DENIED: 403, FILE_NOT_FOUND: 404, UNSUPPORTED_FORMAT: 422, LIMIT_EXCEEDED: 413, BUSY: 429, NETWORK_ERROR: 502, TIMEOUT: 504, CANCELLED: 408, TOOL_FAILED: 500 };
 export function registerRoutes(app: FastifyInstance, config: WorkstationConfig, runtime: Runtime) {
   app.get('/api/health', async () => ({ status: 'ok', version: '0.1.0' }));
@@ -19,21 +24,21 @@ export function registerRoutes(app: FastifyInstance, config: WorkstationConfig, 
   });
   app.post<{ Params: { name: string } }>('/api/tools/:name/run', async (request, reply) => {
     if (request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') return reply.code(415).send({ error: { code: 'INVALID_INPUT', message: '请求必须使用 application/json。' } });
-    const parsed = z.strictObject({ input: z.unknown().refine(v => v !== undefined), requestId: z.string().uuid().optional() }).safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: { code: 'INVALID_INPUT', message: '请求需要且仅允许 input 字段，可选 requestId。' } });
+    const parsed = z.strictObject({ input: z.unknown().refine(v => v !== undefined), requestId: z.string().uuid().optional(), ownerToken: z.string().min(8).max(128).optional() }).safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: { code: 'INVALID_INPUT', message: '请求需要且仅允许 input 字段，可选 requestId 与 ownerToken。' } });
     // A closed browser tab no longer cancels the run: the work continues on the
     // server and the result stays available for the caller to pick up later.
-    const result = await runtime.executor.run(request.params.name, parsed.data.input, { source: 'web', runId: parsed.data.requestId });
+    const result = await runtime.executor.run(request.params.name, parsed.data.input, { source: 'web', runId: parsed.data.requestId, ownerToken: parsed.data.ownerToken });
     if (reply.raw.destroyed) return reply;
     return reply.code(result.ok ? 200 : statuses[result.error.code]).send(result);
   });
   app.post('/api/output/open', async (_request, reply) => {
     const result = openDirectory(config.outputDirectory);
     if (!result.opened) return reply.code(500).send({ error: { code: 'TOOL_FAILED', message: result.reason ?? '无法打开输出目录。' } });
-    return { opened: true, directory: config.outputDirectory };
+    return { opened: true };
   });
   app.post<{ Params: { runId: string } }>('/api/runs/:runId/cancel', async (request) => {
-    const cancelled = runtime.executor.cancelRun(request.params.runId);
+    const cancelled = runtime.executor.cancelRun(request.params.runId, ownerTokenOf(request));
     return { cancelled };
   });
   app.get<{ Querystring: { tool?: string } }>('/api/runs/latest', async (request, reply) => {
@@ -42,11 +47,11 @@ export function registerRoutes(app: FastifyInstance, config: WorkstationConfig, 
     const latest = runtime.executor.latestRun(tool);
     if (!latest) return { runId: null, at: null, status: 'none', progress: null, result: null };
     const progress = runtime.executor.progress.get(latest.runId);
-    const result = runtime.executor.getResult(latest.runId);
-    return { runId: latest.runId, at: latest.at, status: progress?.status ?? (result ? (result.ok ? 'succeeded' : 'failed') : 'running'), progress, result };
+    const result = runtime.executor.getResult(latest.runId, ownerTokenOf(request));
+    return { runId: latest.runId, at: latest.at, status: progress?.status ?? (result ? (result.ok ? 'succeeded' : 'failed') : 'unknown'), progress, result, owned: runtime.executor.owns(latest.runId, ownerTokenOf(request)) };
   });
   app.get<{ Params: { runId: string } }>('/api/runs/:runId/result', async (request, reply) => {
-    const result = runtime.executor.getResult(request.params.runId);
+    const result = runtime.executor.getResult(request.params.runId, ownerTokenOf(request));
     if (!result) return reply.code(404).send({ error: { code: 'TOOL_NOT_FOUND', message: '没有找到该运行的结果，可能从未开始或已过期。' } });
     return result;
   });
@@ -65,6 +70,7 @@ export function registerRoutes(app: FastifyInstance, config: WorkstationConfig, 
     });
     const send = (value: unknown) => { if (!reply.raw.writableEnded) reply.raw.write(`data: ${JSON.stringify(value)}\n\n`); };
     // Always send a first frame so clients never wait for the run to start.
+    if (progress && progress.status !== 'running') { send(progress); reply.raw.end(); return reply; }
     send(progress ?? {
       runId: request.params.runId,
       tool: '',

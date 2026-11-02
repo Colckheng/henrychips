@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { RunSource, ToolResult, RunMeta } from '../contracts/run.js';
 import type { ToolContext, PublicHttp, ProcessProbe } from '../contracts/tool.js';
 import type { WorkstationConfig } from './config.js';
@@ -13,11 +13,14 @@ export interface RunOptions {
   signal?: AbortSignal;
   /** Lets a caller know the run identifier before the result is ready. */
   runId?: string;
+  /** Secret that proves ownership of the run for cancel and result lookups. */
+  ownerToken?: string;
 }
 
 interface StoredResult {
   result: ToolResult;
   at: number;
+  omitted?: boolean;
 }
 
 export class ToolExecutor {
@@ -26,6 +29,7 @@ export class ToolExecutor {
   private readonly results = new Map<string, StoredResult>();
   private readonly latest = new Map<string, { runId: string; at: number }>();
   private readonly cancelledBeforeStart = new Set<string>();
+  private readonly owners = new Map<string, string>();
   readonly progress = new ProgressStore();
   constructor(
     readonly registry: ToolRegistry,
@@ -35,7 +39,8 @@ export class ToolExecutor {
   ) {}
 
   /** Cancels a run that is still in flight. Used by the explicit cancel route. */
-  cancelRun(runId: string): boolean {
+  cancelRun(runId: string, ownerToken?: string): boolean {
+    if (!this.owns(runId, ownerToken)) return false;
     const controller = this.running.get(runId);
     if (!controller) {
       // The cancel may arrive before the run registers; remember it so the run
@@ -47,9 +52,18 @@ export class ToolExecutor {
     return true;
   }
 
+  /** True when the caller may act on the run. */
+  owns(runId: string, ownerToken?: string): boolean {
+    const token = this.owners.get(runId);
+    if (!token || !ownerToken) return false;
+    if (token.length !== ownerToken.length) return false;
+    return timingSafeEqual(Buffer.from(token), Buffer.from(ownerToken));
+  }
+
   /** Returns a finished result so it can be shown again after the page closed. */
-  getResult(runId: string): ToolResult | undefined {
+  getResult(runId: string, ownerToken?: string): ToolResult | undefined {
     this.pruneResults();
+    if (!this.owns(runId, ownerToken)) return undefined;
     return this.results.get(runId)?.result;
   }
 
@@ -69,11 +83,22 @@ export class ToolExecutor {
       if (!oldest) break;
       this.results.delete(oldest[0]);
     }
+    let total = 0;
+    for (const entry of this.results.values()) total += JSON.stringify(entry.result).length;
+    while (total > 32_000_000 && this.results.size > 1) {
+      const oldest = [...this.results.entries()].sort((left, right) => left[1].at - right[1].at)[0];
+      if (!oldest) break;
+      total -= JSON.stringify(oldest[1].result).length;
+      this.results.delete(oldest[0]);
+    }
   }
 
   async run(name: string, input: unknown, options: RunOptions): Promise<ToolResult> {
     const start = performance.now();
     const runId = options.runId ?? randomUUID();
+    if (this.running.has(runId)) throw new ToolError('BUSY', '该运行号正在使用中，请换一个运行号。');
+    const ownerToken = options.ownerToken ?? randomUUID();
+    this.owners.set(runId, ownerToken);
     const meta: RunMeta = { runId, tool: name, source: options.source, startedAt: new Date().toISOString(), durationMs: 0, warnings: [] };
     const timeout = new AbortController();
     const controller = new AbortController();
@@ -130,10 +155,8 @@ export class ToolExecutor {
     if (started) this.progress.finish(runId, result.ok ? 'succeeded' : result.error.code === 'CANCELLED' ? 'cancelled' : 'failed', result.ok ? '已完成' : '失败');
     // Keep a bounded copy of the result so a finished run can be shown again.
     const serialized = JSON.stringify(result).length;
-    if (serialized <= 2_000_000) {
-      this.results.set(runId, { result, at: Date.now() });
-      this.pruneResults();
-    }
+    this.results.set(runId, serialized <= 2_000_000 ? { result, at: Date.now() } : { result, at: Date.now(), omitted: true });
+    this.pruneResults();
     try {
       await this.store.append({ runId: meta.runId, tool: name, source: options.source, status: result.ok ? 'succeeded' : result.error.code === 'CANCELLED' ? 'cancelled' : 'failed', startedAt: meta.startedAt, durationMs: meta.durationMs, errorCode: result.ok ? null : result.error.code });
     } catch {
