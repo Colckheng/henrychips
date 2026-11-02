@@ -43,10 +43,28 @@ export function registerRoutes(app: FastifyInstance, config: WorkstationConfig, 
       'X-Accel-Buffering': 'no',
     });
     const send = (value: unknown) => { if (!reply.raw.writableEnded) reply.raw.write(`data: ${JSON.stringify(value)}\n\n`); };
-    if (progress) send(progress);
-    const unsubscribe = runtime.executor.progress.subscribe(request.params.runId, send);
+    // Always send a first frame so clients never wait for the run to start.
+    send(progress ?? {
+      runId: request.params.runId,
+      tool: '',
+      source: 'web',
+      status: 'running',
+      phase: '等待任务开始',
+      percent: null,
+      steps: [],
+      updatedAt: new Date().toISOString(),
+    });
+    const unsubscribe = runtime.executor.progress.subscribe(request.params.runId, value => {
+      send(value);
+      // Close the stream once the run is over so clients do not abort it.
+      if (value.status !== 'running') close();
+    });
     const heartbeat = setInterval(() => { if (!reply.raw.writableEnded) reply.raw.write(': keep-alive\n\n'); }, 15_000);
-    const close = () => { clearInterval(heartbeat); unsubscribe(); if (!reply.raw.writableEnded) reply.raw.end(); };
+    const close = () => {
+      clearInterval(heartbeat);
+      unsubscribe();
+      if (!reply.raw.writableEnded) reply.raw.end();
+    };
     reply.raw.once('close', close);
     return reply;
   });

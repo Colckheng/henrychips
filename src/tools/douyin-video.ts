@@ -50,6 +50,7 @@ export const douyinVideoTool = defineTool({
     let target = url.trim();
     if (isShortLink(target)) target = await resolveShortLink(ctx.http, target, ctx);
     const awemeId = awemeIdFrom(target);
+    ctx.reportProgress?.({ phase: '解析作品信息' });
     const video = await fetchDouyinVideo(awemeId, ctx);
     const warnings: string[] = [];
     const videoUrl = video.playUrls[0] ?? video.watermarkUrls[0] ?? '';
@@ -62,6 +63,7 @@ export const douyinVideoTool = defineTool({
     if (download) {
       if (!ctx.output) throw new ToolError('ACCESS_DENIED', '当前环境未启用文件写入。');
       if (parts !== 'audio') {
+        ctx.reportProgress?.({ phase: '下载视频文件', percent: 60 });
         const bytes = await downloadMedia(videoUrl, ctx);
         savedFile = await writeUniqueFile(ctx.output, `douyin-${awemeId}.mp4`, bytes);
       }

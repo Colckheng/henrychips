@@ -10,7 +10,7 @@ test('schema defaults and blank optional numbers produce the expected PDF payloa
   await page.locator('[name="endPage"]').fill('');
   const sent = page.waitForRequest(request => request.url().endsWith('/api/tools/pdf_extract/run'));
   await page.getByRole('button', { name: '运行工具', exact: true }).click();
-  expect((await sent).postDataJSON()).toEqual({ input: { path: 'samples/guide.pdf', startPage: 1 } });
+  expect((await sent).postDataJSON()).toMatchObject({ input: { path: 'samples/guide.pdf', startPage: 1 } });
 });
 
 test('cancelled requests cannot overwrite a newly started run', async ({ page }) => {

@@ -15,7 +15,7 @@ test('catalog reflects the API and supports search, categories and an empty stat
   const response = await request.get('/api/tools');
   expect(response.ok()).toBeTruthy();
   const tools = await response.json() as ToolDescription[];
-  expect(tools).toHaveLength(11);
+  expect(tools).toHaveLength(12);
   await page.goto('/#/tools');
   await expect(page.getByTestId('tool-card')).toHaveCount(tools.length);
   for (const tool of tools) {
@@ -108,14 +108,14 @@ test('API transport failures offer a working retry', async ({ page }) => {
   await expect(page.getByRole('alert')).toContainText('无法连接本地服务');
   await page.unroute('**/api/tools');
   await page.getByRole('button', { name: '重试加载' }).click();
-  await expect(page.getByTestId('tool-card')).toHaveCount(11);
+  await expect(page.getByTestId('tool-card')).toHaveCount(12);
 });
 
 for (const width of [375, 1440]) {
   test(`workbench remains usable without page overflow at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await page.goto('/#/tools');
-    await expect(page.getByTestId('tool-card')).toHaveCount(11);
+    await expect(page.getByTestId('tool-card')).toHaveCount(12);
     await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: 'AI 接入' }).click();
     await expect(page.getByTestId('mcp-config')).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
@@ -129,7 +129,7 @@ for (const width of [375, 1440]) {
 
 test('media and document tools join the catalog and photo compression runs in the browser', async ({ page }) => {
   await page.goto('/#/tools');
-  await expect(page.getByTestId('tool-card')).toHaveCount(11);
+  await expect(page.getByTestId('tool-card')).toHaveCount(12);
   await page.getByRole('group', { name: '按分类筛选' }).getByRole('button', { name: '影音处理' }).click();
   await expect(page.getByTestId('tool-card')).toHaveCount(4);
   await openTool(page, 'photo_compress');
@@ -143,11 +143,23 @@ test('media and document tools join the catalog and photo compression runs in th
   await expect(page.locator('.result-body')).toContainText('Personal Workstation Guide');
 });
 
+test('the catalog shows the new table tool and long runs report progress', async ({ page }) => {
+  await page.goto('/#/tools');
+  await expect(page.getByTestId('tool-card')).toHaveCount(12);
+  await page.getByRole('searchbox', { name: '搜索工具' }).fill('表格分析');
+  await expect(page.getByTestId('tool-card')).toHaveCount(1);
+  await openTool(page, 'pdf_extract');
+  await page.locator('[name="path"]').fill('samples/guide.pdf');
+  await page.getByRole('button', { name: '运行工具', exact: true }).click();
+  await expect(page.locator('.progress-view')).toBeVisible({ timeout: 15000 });
+  await expect(page.getByRole('status').filter({ hasText: '执行成功' })).toBeVisible({ timeout: 30000 });
+});
+
 test('PDF, environment and file preview execute without browser errors', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
-  page.on('requestfailed', request => errors.push(`${request.method()} ${request.url()}`));
+  page.on('requestfailed', request => { if (!request.url().includes('/events')) errors.push(`${request.method()} ${request.url()}`); });
   await openTool(page, 'pdf_extract');
   await page.locator('[name="path"]').fill('samples/guide.pdf');
   await runTool(page);
@@ -169,7 +181,7 @@ test('PDF, environment and file preview execute without browser errors', async (
 
 test('keyboard navigation and long text keep the workbench usable', async ({ page }) => {
   await page.goto('/#/tools');
-  await expect(page.getByTestId('tool-card')).toHaveCount(11);
+  await expect(page.getByTestId('tool-card')).toHaveCount(12);
   await page.keyboard.press('Tab');
   await expect(page.getByRole('link', { name: '跳至主要内容' })).toBeFocused();
   await page.keyboard.press('Enter');

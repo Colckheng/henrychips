@@ -46,6 +46,7 @@ export const douyinNoWatermarkTool = defineTool({
     let target = url.trim();
     if (isShortLink(target)) target = await resolveShortLink(ctx.http, target, ctx);
     const awemeId = awemeIdFrom(target);
+    ctx.reportProgress?.({ phase: '解析作品信息' });
     const video = await fetchDouyinVideo(awemeId, ctx);
     const noWatermark = video.playUrls[0] ?? '';
     if (!noWatermark) throw new ToolError('FILE_NOT_FOUND', '该作品没有返回无水印地址，可能是图文作品或已受限。');
@@ -58,6 +59,7 @@ export const douyinNoWatermarkTool = defineTool({
     if (download) {
       if (!ctx.output) throw new ToolError('ACCESS_DENIED', '未启用文件写入。');
       if (parts !== 'audio') {
+        ctx.reportProgress?.({ phase: '下载无水印文件', percent: 60 });
         const bytes = await downloadMedia(noWatermark, ctx);
         savedFile = await writeUniqueFile(ctx.output, `douyin-nowatermark-${awemeId}.mp4`, bytes);
       }

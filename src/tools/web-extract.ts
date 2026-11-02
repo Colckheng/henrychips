@@ -57,6 +57,7 @@ export const webExtractTool = defineTool({
     truncated: z.boolean(), fetchedAt: z.string(), untrustedContent: z.literal(true),
   }),
   async execute({ url }, ctx) {
+    ctx.reportProgress?.({ phase: '请求网页' });
     checkAbort(ctx.signal);
     if (!ctx.http) throw new ToolError('ACCESS_DENIED', '未启用公共网页访问。');
     let response: Awaited<ReturnType<typeof ctx.http.getHtml>>;

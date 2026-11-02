@@ -9,11 +9,12 @@ import { douyinVideoTool } from './douyin-video.js';
 import { douyinNoWatermarkTool } from './douyin-nowatermark.js';
 import { docConvertTool } from './doc-convert.js';
 import { photoCompressTool } from './photo-compress.js';
+import { xlsxSummaryTool } from './xlsx-summary.js';
 import { ToolRegistry } from '../core/registry.js';
 
 export function createRegistry() {
   return new ToolRegistry([
     filesPlanTool, textStatsTool, csvSummaryTool, pdfExtractTool, webExtractTool, envInspectTool,
-    bilibiliVideoTool, douyinVideoTool, douyinNoWatermarkTool, docConvertTool, photoCompressTool,
+    bilibiliVideoTool, douyinVideoTool, douyinNoWatermarkTool, docConvertTool, photoCompressTool, xlsxSummaryTool,
   ]);
 }

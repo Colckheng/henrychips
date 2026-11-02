@@ -25,7 +25,7 @@ test('compiled CLI MCP and HTTP return identical CSV results; compiled PDF worke
   const client = new Client({ name: 'built-check', version: '1.0.0' });
   t.after(() => client.close());
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [path.join(projectRoot, 'dist/server/adapters/mcp/main.js'), '--config', configPath], cwd: tmpdir(), stderr: 'pipe' }));
-  assert.equal((await client.listTools()).tools.length, 11);
+  assert.equal((await client.listTools()).tools.length, 12);
   const mcp = await client.callTool({ name: 'csv_summary', arguments: { path: 'samples/sales.csv' } });
   assert.deepEqual((mcp.structuredContent as { data: unknown }).data, cliResult.data);
   const moduleUrl = pathToFileURL(path.join(projectRoot, 'dist/server/adapters/http/app.js')).href;

@@ -601,6 +601,20 @@ export interface EnvironmentReport {
 
 新增 `files:write` 能力与 `outputDirectory` 配置（默认 `sandbox/downloads`）。写入器只接受输出目录内的相对路径，拒绝绝对路径、`..`、设备名与 Windows 保留名，限制单文件体积，默认不覆盖同名文件（同名时自动追加序号，工具也可显式勾选覆盖）。输入工作区仍为只读。
 
+**运行进度与可视化（第四轮新增）**
+
+- 契约：工具上下文新增 `reportProgress({ phase, percent })`，工具只报告阶段与真实进度，不猜测剩余时间。
+- 运行时：`ProgressStore` 按运行号维护阶段、百分比与步骤时间线；执行器在运行开始、结束与每次上报时更新状态。
+- 接口：客户端可在运行请求里带 `requestId`（网页端自动生成），随后用 `GET /api/runs/:runId/progress` 轮询，或用 `GET /api/runs/:runId/events` 订阅 SSE 事件流；运行结束时服务端主动关闭事件流。
+- 界面：运行中显示进度条、当前阶段与最近步骤；完成或失败后恢复结果展示。
+- 已接入：PDF 文本提取按页报进度，CSV 按行数，文档转换按读取/解析/排版，压缩按解码/编码，影音工具按取元数据/下载阶段。
+- 边界：进度只覆盖本次运行，结束后仅保留 5 分钟；SSE 不可用时网页自动降级为轮询。
+
+**XLSX 表格分析 `xlsx_summary`**
+
+- 用 `exceljs` 在进程内读取工作簿，列出工作表、表头、行数与逐列类型统计（数值列的最小/最大/总和/均值、空值数、高频取值），可指定单个工作表与最多统计行数。
+- 只读不改写；旧版 `.xls` 需先转换为 `.xlsx`；超大工作簿按 `maxRows` 截断并在提示中说明。
+
 **音轨分离（第三轮新增）**
 
 - B 站：DASH 播放信息自带独立音频流，工具新增 `parts` 选项（`video` / `audio` / `both`）。`audio` 只取 DASH 音频流保存为 `.m4a`；`both` 保存合并 MP4 与独立 `.m4a`；`video` 仍是单个 MP4。实测同一稿件输出 5,492,083 字节 MP4 与 2,576,587 字节 M4A。
@@ -1102,7 +1116,7 @@ node "D:/HenryChips/dist/server/adapters/mcp/main.js" --config "D:/HenryChips/wo
 | --- | --- | --- |
 | 类型检查与构建 | 通过 | `npm run typecheck` 包含前端、后端、TS/TSX 测试；`npm run build` 成功生成两个 dist 目录 |
 | 依赖审计 | 通过 | `npm audit --omit=dev`：0 个已知漏洞 |
-| 核心、工具与适配器 | 通过 | `npm test`：92 项，91 通过、1 跳过、0 失败；跳过 Windows 大小写同名文件 |
+| 核心、工具与适配器 | 通过 | `npm test`：97 项，96 通过、1 跳过、0 失败；跳过 Windows 大小写同名文件 |
 | 前端单元检查 | 通过 | `npm run test:web`：10/10，含 CSV 非空字段数量修复、媒体流表格渲染 |
 | 生产协议交叉验证 | 通过 | `npm run test:production`：1/1；非项目 cwd 启动编译 CLI/MCP，与编译 HTTP 比较同一 CSV 完整 data；PDF Worker 提取两页；MCP 暴露 11 个工具 |
 | 浏览器端到端 | 通过 | 编译生产服务 17/17，启用 CSP，覆盖真实 API、下载内容、复制/降级、取消/切换竞态、重试、375/1440px、键盘、10 万字符、PDF/环境/文件预览、影音与文档工具 |
@@ -1160,4 +1174,12 @@ node "D:/HenryChips/dist/server/adapters/mcp/main.js" --config "D:/HenryChips/wo
 - 公网客户端新增受控端口白名单（B 站音频 CDN 使用 8082），私网地址与 DNS 固定策略不变。
 - 回归：`npm test` 92 项（91 通过、1 跳过）、`npm run test:web` 10 项、`npm run test:e2e` 17 项、`npm run test:production` 1 项全部通过；类型检查与构建通过。
 - 未覆盖：抖音被限流期间的端到端复验、缺少系统中文字体时的 PDF 中文输出、其他平台的 CJK 字体嵌入。
+
+### 2026-11-02：第四轮 Git 版本记录、运行进度与 XLSX 分析
+
+- 按用户要求初始化 Git（`main` 分支），并把此前的工作按阶段整理成可读的历史：工程骨架 → 核心执行器与基础工具 → 三个调用入口 → 网页工作台 → 内置转换与影音工具 → 样例与生产验证。未配置远程仓库，未推送任何内容。
+- 新增运行进度通道：工具通过 `reportProgress` 上报阶段与真实进度，`ProgressStore` 按运行号维护状态，网页端用 SSE 订阅（不可用时降级轮询），界面显示进度条、当前阶段与步骤时间线。
+- 新增 `xlsx_summary` 工具：用 ExcelJS 读取工作簿，输出工作表清单、表头、行数与逐列类型与数值统计，只读不改写。
+- 排障记录：PDF 工作线程原本用 `once('message')` 接收结果，改为进度消息后第一条消息被占用导致结果丢失，改为持续监听并区分进度帧；SSE 在没有进行中的任务时不推送首帧会让客户端一直等待，改为总是先推一帧；服务端在运行结束时主动关闭事件流，避免客户端中断被记为失败请求。
+- 回归：`npm test` 97 项、`npm run test:web` 10 项、`npm run test:e2e` 18 项、`npm run test:production` 1 项全部通过；类型检查、构建与依赖审计通过。
 

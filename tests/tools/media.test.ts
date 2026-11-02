@@ -12,6 +12,7 @@ import { douyinNoWatermarkTool } from '../../src/tools/douyin-nowatermark.js';
 import { douyinVideoTool } from '../../src/tools/douyin-video.js';
 import { docConvertTool } from '../../src/tools/doc-convert.js';
 import { photoCompressTool } from '../../src/tools/photo-compress.js';
+import { xlsxSummaryTool } from '../../src/tools/xlsx-summary.js';
 import { renderBlocksToPdf } from '../../src/core/pdf-layout.js';
 import { renderBlocksToDocx } from '../../src/core/docx-build.js';
 import { htmlToBlocks } from '../../src/core/html-blocks.js';
@@ -221,4 +222,29 @@ test('the built-in Word writer produces a document that mammoth can read', async
   const text = await mammoth.extractRawText({ buffer: Buffer.from(bytes) });
   assert.match(text.value, /章节/);
   assert.match(text.value, /第一段内容/);
+});
+
+test('XLSX analysis lists sheets, headers and per-column statistics', async () => {
+  const bytes = new Uint8Array(await readFile(path.resolve('sandbox/samples/sales.xlsx')));
+  const result = await xlsxSummaryTool.execute({ path: 'samples/sales.xlsx', maxRows: 2000, sheet: undefined }, context({
+    files: { readBytes: async () => bytes } as never,
+  }));
+  assert.equal(result.sheetCount, 2);
+  const [sales] = result.sheets;
+  assert.equal(sales.name, '销售');
+  assert.deepEqual(sales.headers, ['item', 'amount', 'note']);
+  assert.equal(sales.analyzedRows, 4);
+  const amount = sales.columns[1];
+  assert.equal(amount.filled, 3);
+  assert.equal(amount.empty, 1);
+  assert.equal(amount.numeric?.sum, 32.5);
+  assert.equal(amount.numeric?.min, 7.5);
+  assert.equal(amount.numeric?.max, 12.5);
+});
+
+test('XLSX analysis refuses files that are not workbooks', async () => {
+  await assert.rejects(
+    xlsxSummaryTool.execute({ path: 'samples/sales.csv', maxRows: 100, sheet: undefined }, context({ files: { readBytes: async () => new Uint8Array() } as never })),
+    /\.xlsx/,
+  );
 });
