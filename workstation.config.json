@@ -1,0 +1,17 @@
+{
+  "workspaceRoot": "./sandbox",
+  "stateDirectory": "./.workstation",
+  "outputDirectory": "./sandbox/downloads",
+  "http": { "host": "127.0.0.1", "port": 4318 },
+  "network": { "enabled": true },
+  "limits": {
+    "fileBytes": 10485760,
+    "csvRows": 10000,
+    "directoryEntries": 1000,
+    "pdfPages": 30,
+    "webBytes": 2097152,
+    "downloadBytes": 209715200,
+    "outputBytes": 209715200,
+    "toolTimeoutMs": 15000
+  }
+}
