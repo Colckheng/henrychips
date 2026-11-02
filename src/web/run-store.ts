@@ -81,14 +81,17 @@ function attach(entry: InternalEntry): void {
   entry.unsubscribe?.();
   entry.unsubscribe = subscribeProgress(entry.requestId, progress => {
     entry.progress = progress;
-    if (progress.status === 'running') { emit(); return; }
-    if (!entry.result) {
-      void fetchRunResult(entry.requestId, ownerToken()).then(result => {
-        if (!result) return;
-        entry.result = result;
-        if (entry.status !== 'cancelled') entry.status = 'done';
-        emit();
-      });
+    if (progress.status !== 'running') {
+      // The server finished the run: free the button even if the HTTP
+      // response is still in flight (or was never delivered).
+      if (entry.status === 'running') entry.status = 'done';
+      if (!entry.result) {
+        void fetchRunResult(entry.requestId, ownerToken()).then(result => {
+          if (!result) return;
+          entry.result = result;
+          emit();
+        });
+      }
     }
     emit();
   });

@@ -21,7 +21,8 @@
     "test:production": "tsx --test tests/production.test.ts",
     "test:web": "tsx --tsconfig tsconfig.web.json --test tests/e2e/*.unit.ts tests/e2e/*.unit.tsx",
     "test:e2e": "playwright test",
-    "samples": "tsx scripts/create-samples.ts"
+    "samples": "tsx scripts/create-samples.ts",
+    "launch": "bash scripts/start-workstation.sh"
   },
   "dependencies": {
     "@fastify/static": "10.1.8",

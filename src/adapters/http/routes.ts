@@ -16,6 +16,26 @@ function ownerTokenOf(request: { headers: Record<string, unknown> }): string | u
 const statuses: Record<ErrorCode, number> = { TOOL_NOT_FOUND: 404, INVALID_INPUT: 400, ACCESS_DENIED: 403, FILE_NOT_FOUND: 404, UNSUPPORTED_FORMAT: 422, LIMIT_EXCEEDED: 413, BUSY: 429, NETWORK_ERROR: 502, TIMEOUT: 504, CANCELLED: 408, TOOL_FAILED: 500 };
 export function registerRoutes(app: FastifyInstance, config: WorkstationConfig, runtime: Runtime) {
   app.get('/api/health', async () => ({ status: 'ok', version: '0.1.0' }));
+  // Identity of this node: the server relay uses it to route tasks and to
+  // know which capabilities the node actually has.
+  app.get('/api/node/identity', async () => ({
+    version: '0.1.0',
+    platform: process.platform,
+    arch: process.arch,
+    node: process.version,
+    capabilities: {
+      browser: true,
+      writeFiles: true,
+      network: config.network.enabled,
+    },
+    tools: runtime.registry.list().map(tool => ({
+      name: tool.name,
+      title: tool.title,
+      category: tool.category,
+      capabilities: tool.capabilities,
+      fields: tool.fields.map(field => field.name),
+    })),
+  }));
   app.get('/api/tools', async () => runtime.registry.list());
   app.get<{ Params: { name: string } }>('/api/tools/:name', async (request, reply) => {
     const tool = runtime.registry.list().find(t => t.name === request.params.name);

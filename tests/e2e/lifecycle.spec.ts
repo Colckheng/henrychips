@@ -37,6 +37,9 @@ test('a late response from an earlier run cannot overwrite the current result', 
   await expect(page.getByRole('status').filter({ hasText: '执行成功' })).toBeVisible({ timeout: 30000 });
   const firstRunId = await page.locator('.result-meta code').innerText();
   expect(firstRunId.trim()).not.toBe('');
+  // The first response is held by the route mock; the button becomes
+  // available again once the server reports the run as finished.
+  await expect(page.getByRole('button', { name: '运行工具', exact: true })).toBeVisible({ timeout: 30000 });
   await page.getByRole('button', { name: '运行工具', exact: true }).click();
   // Wait until the panel shows the newer run before reading its identifier.
   await expect(page.locator('.result-meta code')).not.toHaveText(firstRunId, { timeout: 30000 });

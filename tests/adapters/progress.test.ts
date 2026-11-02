@@ -64,3 +64,17 @@ test('the output folder can be opened without accepting arbitrary paths', async 
   assert.equal(response.json().opened, true);
   assert.ok(String(response.json().directory).length > 0);
 });
+
+test('the node identity reports capabilities and the tool catalogue', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'workstation-identity-'));
+  const app = await buildApp({ ...await loadConfig(), stateDirectory: directory });
+  t.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
+  const response = await app.inject({ url: '/api/node/identity', headers: { host: '127.0.0.1:4318' } });
+  assert.equal(response.statusCode, 200);
+  const body = response.json();
+  assert.equal(body.version, '0.1.0');
+  assert.equal(typeof body.platform, 'string');
+  assert.equal(body.capabilities.browser, true);
+  assert.ok(body.tools.length >= 12);
+  assert.ok(body.tools.every((tool: { name: string }) => typeof tool.name === 'string'));
+});

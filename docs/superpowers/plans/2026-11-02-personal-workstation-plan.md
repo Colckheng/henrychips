@@ -1276,7 +1276,13 @@ node "D:/HenryChips/dist/server/adapters/mcp/main.js" --config "D:/HenryChips/wo
 - 反代用 Caddy/Nginx 自动签 TLS；节点与手机端各自持一枚设备令牌，服务器只接受已注册令牌的请求。
 - 服务器不做工具执行，不中转媒体文件；需要产物时由节点按请求上传或提供一次性下载。
 
-### 20.5 现有代码需要补的部分
+### 20.5 已完成：桌面端 PWA 外壳与节点身份接口
+
+- 桌面端外壳（PWA）：新增 `public/manifest.webmanifest`、`public/sw.js`（只缓存界面外壳，不缓存 `/api/*`）、`public/icons/*`；`index.html` 引用 manifest 与图标；生产构建时注册 service worker。可直接用浏览器“安装应用”变成桌面窗口，手机浏览器也能“添加到主屏幕”。
+- 一键启动：`scripts/start-workstation.sh` 负责检查依赖、按需构建、启动服务、等待健康检查通过并打开工作台；Windows/macOS/Linux 通用。
+- 节点身份：`GET /api/node/identity` 返回版本、平台、Node 版本、能力（是否有浏览器、能否写文件、是否允许联网）与本机可用工具清单，服务器据此决定把任务路由到哪个节点、渲染哪些表单字段。
+
+### 20.6 现有代码需要补的部分
 
 1. 节点身份与鉴权：设备 ID + Bearer 令牌中间件，覆盖现有全部 `/api/*`。
 2. 节点能力清单：`GET /api/node/identity` 返回版本、能力（是否有 Chrome、能否写文件）与可用工具列表，供服务器缓存与路由。
@@ -1286,7 +1292,7 @@ node "D:/HenryChips/dist/server/adapters/mcp/main.js" --config "D:/HenryChips/wo
 6. 桌面端外壳：PWA manifest + service worker + 启动器脚本；可选 Electron 托盘版。
 7. 前端复用：现有界面已通过 375px 与 1440px 布局验证，天然可在手机浏览器使用，这是“手机端不做原生 App”的前提。
 
-### 20.6 待用户确认的服务器条件
+### 20.7 待用户确认的服务器条件
 
 1. 服务器形态与地域：自有 VPS / 云主机 / NAS？是否已有域名与证书？
 2. 是否接受用 Docker 部署中继服务（推荐），还是希望直接跑 Node 进程？
