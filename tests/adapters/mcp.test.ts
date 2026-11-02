@@ -1,0 +1,32 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { tmpdir } from 'node:os';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { projectRoot, loadConfig } from '../../src/core/config.js';
+
+test('real stdio MCP discovers schemas and returns structured tool results', async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'workstation-mcp-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const { configPath: _, ...base } = await loadConfig();
+  const config = path.join(dir, 'config.json');
+  await writeFile(config, JSON.stringify({ ...base, stateDirectory: path.join(dir, 'state') }));
+  const client = new Client({ name: 'workstation-test', version: '1.0.0' });
+  const transport = new StdioClientTransport({ command: process.execPath, args: ['--import', pathToFileURL(path.join(projectRoot, 'node_modules/tsx/dist/loader.mjs')).href, path.join(projectRoot, 'src/adapters/mcp/main.ts'), '--config', config], cwd: tmpdir(), stderr: 'pipe' });
+  t.after(() => client.close());
+  await client.connect(transport);
+  const { tools } = await client.listTools();
+  assert.ok(tools.some(tool => tool.name === 'csv_summary'));
+  const text = tools.find(tool => tool.name === 'text_stats')!;
+  assert.equal(text.inputSchema.additionalProperties, false);
+  const response = await client.callTool({ name: 'text_stats', arguments: { text: 'Hello 世界\n第二行' } });
+  const result = response.structuredContent as { ok: boolean; data: { characters: number } };
+  assert.equal(result.ok, true);
+  assert.equal(result.data.characters, 12);
+  const failed = await client.callTool({ name: 'csv_summary', arguments: { path: 'missing.csv' } });
+  assert.equal(failed.isError, true);
+  assert.equal((failed.structuredContent as { error: { code: string } }).error.code, 'FILE_NOT_FOUND');
+});
