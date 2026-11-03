@@ -1,0 +1,20 @@
+Unit=henry-workstation
+Description=Henry 工作站中继服务
+After=network.target
+
+[Service]
+Type=simple
+User=henry
+WorkingDirectory=/opt/henry/relay
+ExecStart=/usr/bin/node /opt/henry/relay/dist/relay/main.js /opt/henry/relay/relay.config.json
+Restart=always
+RestartSec=5
+# The relay only needs its own data directory and the network.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/henry/relay/data
+
+[Install]
+WantedBy=multi-user.target

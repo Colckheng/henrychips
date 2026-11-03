@@ -1,4 +1,5 @@
 import { open, opendir, realpath, lstat, mkdir, writeFile } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import type { FileAccess, FileEntry, FileWriter } from '../contracts/tool.js';
 import { ToolError, fileError } from './errors.js';
@@ -87,7 +88,9 @@ export async function writeUniqueFile(writer: FileWriter, fileName: string, byte
   const dot = fileName.lastIndexOf('.');
   const base = dot > 0 ? fileName.slice(0, dot) : fileName;
   const extension = dot > 0 ? fileName.slice(dot) : '';
-  for (let index = 1; index <= 50; index++) {
+  // A long-running workstation writes the same output name many times, so the
+  // search keeps going and falls back to a random suffix instead of giving up.
+  for (let index = 1; index <= 1000; index++) {
     const candidate = index === 1 ? fileName : `${base}-${index}${extension}`;
     try { return await writer.write(candidate, bytes, options); }
     catch (error) {
@@ -95,7 +98,10 @@ export async function writeUniqueFile(writer: FileWriter, fileName: string, byte
       if (!isExisting) throw error;
     }
   }
-  throw new ToolError('ACCESS_DENIED', '输出目录中同名文件过多，请更换文件名。');
+  const suffix = randomBytes(4).toString('hex');
+  const candidate = `${base}-${suffix}${extension}`;
+  try { return await writer.write(candidate, bytes, options); }
+  catch { throw new ToolError('ACCESS_DENIED', '输出目录中同名文件过多，请更换文件名。'); }
 }
 
 const unsafeSegment = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;

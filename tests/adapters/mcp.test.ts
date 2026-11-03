@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { projectRoot, loadConfig } from '../../src/core/config.js';
+import { getProjectRoot, loadConfig } from '../../src/core/config.js';
 
 test('real stdio MCP discovers schemas and returns structured tool results', async t => {
   const dir = await mkdtemp(path.join(tmpdir(), 'workstation-mcp-'));
@@ -15,7 +15,7 @@ test('real stdio MCP discovers schemas and returns structured tool results', asy
   const config = path.join(dir, 'config.json');
   await writeFile(config, JSON.stringify({ ...base, stateDirectory: path.join(dir, 'state') }));
   const client = new Client({ name: 'workstation-test', version: '1.0.0' });
-  const transport = new StdioClientTransport({ command: process.execPath, args: ['--import', pathToFileURL(path.join(projectRoot, 'node_modules/tsx/dist/loader.mjs')).href, path.join(projectRoot, 'src/adapters/mcp/main.ts'), '--config', config], cwd: tmpdir(), stderr: 'pipe' });
+  const transport = new StdioClientTransport({ command: process.execPath, args: ['--import', pathToFileURL(path.join(getProjectRoot(), 'node_modules/tsx/dist/loader.mjs')).href, path.join(getProjectRoot(), 'src/adapters/mcp/main.ts'), '--config', config], cwd: tmpdir(), stderr: 'pipe' });
   t.after(() => client.close());
   await client.connect(transport);
   const { tools } = await client.listTools();

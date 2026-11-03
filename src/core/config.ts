@@ -4,7 +4,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 
-function findProjectRoot() {
+/**
+ * Locates the directory that holds the built assets and the config file. The
+ * lookup stays lazy: a packaged build keeps the code inside an archive, where
+ * no config file exists, so the search must not run at import time.
+ */
+export function findProjectRoot(): string {
   let dir = path.dirname(fileURLToPath(import.meta.url));
   while (!existsSync(path.join(dir, 'workstation.config.json'))) {
     const parent = path.dirname(dir);
@@ -13,9 +18,20 @@ function findProjectRoot() {
   }
   return dir;
 }
-export const projectRoot = findProjectRoot();
+let cachedProjectRoot: string | undefined;
+export function getProjectRoot(): string {
+  cachedProjectRoot ??= findProjectRoot();
+  return cachedProjectRoot;
+}
 
 const positive = z.number().int().positive();
+const relaySchema = z.strictObject({
+  address: z.string().min(1),
+  deviceToken: z.string().min(8).max(256),
+  deviceId: z.string().min(1),
+  deviceName: z.string().min(1).max(60),
+  relayToken: z.string().min(8).max(256).optional(),
+});
 export const configSchema = z.strictObject({
   workspaceRoot: z.string().min(1),
   stateDirectory: z.string().min(1),
@@ -23,10 +39,11 @@ export const configSchema = z.strictObject({
   http: z.strictObject({ host: z.literal('127.0.0.1'), port: positive.max(65535) }),
   network: z.strictObject({ enabled: z.boolean() }),
   limits: z.strictObject({ fileBytes: positive, csvRows: positive, directoryEntries: positive, pdfPages: positive, webBytes: positive, downloadBytes: positive, outputBytes: positive, toolTimeoutMs: positive.max(120000) }),
+  relay: relaySchema.optional(),
 });
 export type WorkstationConfig = z.infer<typeof configSchema> & { configPath: string };
 
-export async function loadConfig(configPath = path.join(projectRoot, 'workstation.config.json')): Promise<WorkstationConfig> {
+export async function loadConfig(configPath = path.join(getProjectRoot(), 'workstation.config.json')): Promise<WorkstationConfig> {
   if (!path.isAbsolute(configPath)) throw new Error('配置文件必须使用绝对路径。');
   let raw: unknown;
   try { raw = JSON.parse(await readFile(configPath, 'utf8')); }

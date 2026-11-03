@@ -1,4 +1,4 @@
-import { ArrowUpRight, Boxes, ChevronRight, Circle, History, LayoutGrid, LoaderCircle, PlugZap, SquareTerminal } from 'lucide-react';
+import { ArrowUpRight, Boxes, ChevronRight, Circle, History, LayoutGrid, LoaderCircle, PlugZap, Server, SquareTerminal } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useEffect, useRef } from 'react';
 import type { ToolDescription } from '../../contracts/tool.js';
@@ -11,6 +11,7 @@ const navigation = [
   { page: 'tools', label: '工具箱', icon: LayoutGrid },
   { page: 'runs', label: '执行记录', icon: History },
   { page: 'integrations', label: 'AI 接入', icon: PlugZap },
+  { page: 'servers', label: '服务器', icon: Server },
 ] as const;
 
 function HealthStatus() {

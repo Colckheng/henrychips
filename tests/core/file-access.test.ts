@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { createFileAccess } from '../../src/core/file-access.js';
+import { createFileAccess, createFileWriter, writeUniqueFile } from '../../src/core/file-access.js';
 
 test('bounds actual reads and rejects traversal and Windows path bypasses', async (t) => {
   const base = await mkdtemp(path.join(tmpdir(), 'workstation-files-'));
@@ -36,4 +36,16 @@ test('rejects junctions resolving outside root and skips their enumeration', asy
   const files = createFileAccess(root, new AbortController().signal);
   await assert.rejects(files.readText('link/secret.txt', 100), { code: 'ACCESS_DENIED' });
   assert.equal((await files.list('.', 10))[0].kind, 'symlink');
+});
+
+test('keeps writing unique names after many collisions with the same file name', async (t) => {
+  const base = await mkdtemp(path.join(tmpdir(), 'workstation-unique-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const writer = createFileWriter(base, new AbortController().signal, 1048576);
+  const bytes = new Uint8Array([1, 2, 3]);
+  // A long-running workstation writes the same output name over and over.
+  for (let index = 0; index < 120; index++) {
+    const saved = await writeUniqueFile(writer, 'report.txt', bytes);
+    assert.match(saved.relativePath, /^report(-\d+)?\.txt$/);
+  }
 });

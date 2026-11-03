@@ -152,7 +152,6 @@ export class ToolExecutor {
       meta.durationMs = Math.round((performance.now() - start) * 100) / 100;
       this.running.delete(runId);
     }
-    if (started) this.progress.finish(runId, result.ok ? 'succeeded' : result.error.code === 'CANCELLED' ? 'cancelled' : 'failed', result.ok ? '已完成' : '失败');
     // Keep a bounded copy of the result so a finished run can be shown again.
     const serialized = JSON.stringify(result).length;
     this.results.set(runId, serialized <= 2_000_000 ? { result, at: Date.now() } : { result, at: Date.now(), omitted: true });
@@ -163,6 +162,9 @@ export class ToolExecutor {
       meta.warnings.push('本次运行记录未保存。');
       process.stderr.write(`[workstation] run ${meta.runId}: summary write failed\n`);
     }
+    // The finished frame goes out last: whoever reacts to it can already read
+    // the result and find the summary in the run history.
+    if (started) this.progress.finish(runId, result.ok ? 'succeeded' : result.error.code === 'CANCELLED' ? 'cancelled' : 'failed', result.ok ? '已完成' : '失败');
     return result;
   }
 }

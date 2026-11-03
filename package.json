@@ -8,7 +8,10 @@
   },
   "overrides": {
     "glob": "14.0.3",
-    "minimatch": "11.0.4"
+    "minimatch": "11.0.4",
+    "tar": "7.5.22",
+    "make-fetch-happen": "14.0.2",
+    "cacache": "18.0.4"
   },
   "scripts": {
     "dev": "concurrently -k -n api,web \"tsx watch src/adapters/http/server.ts --dev\" \"vite --host 127.0.0.1\"",
@@ -17,12 +20,19 @@
     "start": "node dist/server/adapters/http/server.js",
     "cli": "tsx src/adapters/cli/main.ts",
     "mcp": "tsx src/adapters/mcp/main.ts",
-    "test": "tsx --test tests/core/*.test.ts tests/tools/*.test.ts tests/adapters/*.test.ts",
+    "test": "tsx --test tests/core/*.test.ts tests/tools/*.test.ts tests/adapters/*.test.ts tests/relay/*.test.ts",
     "test:production": "tsx --test tests/production.test.ts",
     "test:web": "tsx --tsconfig tsconfig.web.json --test tests/e2e/*.unit.ts tests/e2e/*.unit.tsx",
     "test:e2e": "playwright test",
+    "test:desktop": "playwright test --config playwright.electron.config.ts",
     "samples": "tsx scripts/create-samples.ts",
-    "launch": "bash scripts/start-workstation.sh"
+    "launch": "bash scripts/start-workstation.sh",
+    "relay:serve": "tsx src/relay/main.ts",
+    "relay:node": "tsx src/adapters/relay/main.ts",
+    "relay:pair": "tsx src/adapters/relay/pair.ts",
+    "desktop": "npm run build && electron .",
+    "desktop:stage": "node scripts/stage-electron.mjs",
+    "desktop:dist": "npm run build && npm run desktop:stage && electron-builder --win --x64 --config.electronDist=el-stage"
   },
   "dependencies": {
     "@fastify/static": "10.1.8",
@@ -54,10 +64,13 @@
     "@vitejs/plugin-react": "5.2.0",
     "autoprefixer": "10.6.2",
     "concurrently": "9.2.5",
+    "electron": "45.2.1",
+    "electron-builder": "26.18.0",
     "postcss": "8.5.32",
     "tailwindcss": "3.4.17",
     "tsx": "4.23.15",
     "typescript": "5.9.3",
     "vite": "7.3.7"
-  }
+  },
+  "main": "electron/main.mjs"
 }

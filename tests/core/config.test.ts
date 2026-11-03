@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { loadConfig, projectRoot } from '../../src/core/config.js';
+import { getProjectRoot, loadConfig } from '../../src/core/config.js';
 
 test('resolves configuration paths against the config location and rejects unknown fields', async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), 'workstation-config-'));
@@ -23,7 +23,7 @@ test('resolves configuration paths against the config location and rejects unkno
 
 test('loads default configuration relative to project and restricts host', async (t) => {
   const config = await loadConfig();
-  assert.equal(config.workspaceRoot, path.join(projectRoot, 'sandbox'));
+  assert.equal(config.workspaceRoot, path.join(getProjectRoot(), 'sandbox'));
   const dir = await mkdtemp(path.join(tmpdir(), 'workstation-host-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'config.json');

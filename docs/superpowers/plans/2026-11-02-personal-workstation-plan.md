@@ -1025,12 +1025,19 @@ MCP 测试必须真的启动项目进程并完成协议交互，不能只检查�
 | `npm test` | 运行核心、六工具和适配器测试，不依赖外网 |
 | `npm run test:web` | 表单序列化与结果渲染单元检查 |
 | `npm run test:production` | 构建后检查 CLI/MCP/HTTP 结果一致性和 PDF Worker |
-| `npm run test:e2e` | 启动或复用本地服务，执行 16 项 Chrome 浏览器测试 |
+| `npm run test:e2e` | 启动或复用本地服务，执行 20 项 Chrome 浏览器测试 |
+| `npm run test:desktop` | 用 Playwright 驱动 Electron 外壳，检查窗口、托盘、关窗留驻与开机自启 |
 | `npm run samples` | 生成可提取文本的两页 PDF 样例，保留已有文件 |
 | `npm run build` | 生成 `dist/server` 与 `dist/web` |
 | `npm start` | 生产模式提供网页与 HTTP API |
 | `npm run cli -- ...` | 开发阶段运行 CLI |
 | `npm run mcp` | 开发阶段启动 stdio MCP，仅用于调试 |
+| `npm run desktop` | 构建后启动桌面外壳（自带运行时，无需另装 Node） |
+| `npm run desktop:stage` | 复制一份 Electron 运行时，去掉 Windows 上被占用的 `default_app.asar` |
+| `npm run desktop:dist` | 打包 Windows 安装包到 `release/` |
+| `npm run relay:serve -- <配置>` | 在服务器上启动中继服务 |
+| `npm run relay:node` | 在设备上启动节点连接器，向中继报到并领取任务 |
+| `npm run relay:pair -- <地址> <配对码> <设备名> [--token <令牌>]` | 配对设备并写入配置 |
 
 构建后的直接调用：
 
@@ -1059,6 +1066,8 @@ node "D:/HenryChips/dist/server/adapters/mcp/main.js" --config "D:/HenryChips/wo
 | CLI | list、inspect、run、输入文件 | 非法 JSON、互斥参数、退出码、SIGINT |
 | MCP | 握手、发现、成功输出 | 工具失败、取消、日志污染、非项目 cwd |
 | 网页 | 表单到结果到历史 | 空状态、错误、连续点击、切换工具、窄屏、键盘 |
+| 中继 | 配对、注册、派单、回传、历史 | 配对码错误、令牌无效、设备离线、非法输入 |
+| 桌面外壳 | 窗口渲染、托盘菜单、关窗留驻、开机自启 | 服务未就绪、已有服务占用端口、缺构建产物 |
 
 测试用实际临时文件与真实子进程验证本项目行为；不以实现生成的期望值再次对照实现。外网测试不成为普通单元测试的前提，第三方协议的内部机制也不重复测试。
 
@@ -1356,3 +1365,51 @@ node "D:/HenryChips/dist/server/adapters/mcp/main.js" --config "D:/HenryChips/wo
 ### 22.5 审查后的验证
 
 `npm test` 102 项（101 通过、1 跳过）、`npm run test:web` 10 项、`npm run test:e2e` 20 项（连续三次全通过）、`npm run test:production` 1 项全部通过；类型检查、构建与依赖审计通过。
+
+## 23. 桌面端外壳与打包（2026-11-03）
+
+### 23.1 桌面外壳的运行方式
+
+桌面端用 Electron 34 起家，本轮换到 **Electron 45.2.1**（内含 Node 24）：Electron 自带的 Node 既能加载 `node:sqlite`，也能加载 sharp 的原生模块，所以**桌面端不再需要单独安装 Node**。
+
+| 决策 | 原因 |
+| --- | --- |
+| 服务跑在 Electron 主进程内，不再 spawn 子进程 | 打包后代码在 `app.asar` 里，子进程读不到；Electron 的 Node 能直接读 asar 并跑服务 |
+| 配置放在 `%APPDATA%/personal-workstation/workstation.config.json` | 打包版本没有项目目录，配置与工作区需要自带 |
+| `projectRoot` 改为惰性查找 | 原来在模块加载时就向上找 `workstation.config.json`，在 asar 里必然抛错，服务根本起不来 |
+| `buildApp`/`registerRoutes` 增加 `assetRoot` 参数 | 静态资源与 MCP/CLI 入口路径要能指向 asar 内部 |
+| 打包前用 `scripts/stage-electron.mjs` 复制一份运行时 | Windows 上解包后的 `resources/default_app.asar` 一直被占用，安装包无法替换它；改为打包时不带这个文件 |
+
+`npm run desktop` 直接启动；`npm run desktop:dist` 先构建、再准备运行时、最后产出 NSIS 安装包。
+
+### 23.2 桌面端行为验证
+
+`tests/electron/desktop.spec.ts` 用 Playwright 的 Electron 驱动覆盖四件事：窗口渲染出工作台（不是白屏）、关闭窗口只是隐藏而服务继续、托盘菜单项齐全、开机自启开关能读到登录项状态。
+
+打包产物另外做了真机验证：清空 `%APPDATA%/personal-workstation/` 后启动安装包内的 exe，4318 端口正常监听、`/api/tools` 返回 12 个工具、网页与静态资源 200、`text_stats` 与依赖 sharp 的 `photo_compress` 都能跑通，产物落在 `sandbox/downloads/`。
+
+### 23.3 本轮修掉的三个真实缺陷
+
+| 缺陷 | 根因 | 修复 |
+| --- | --- | --- |
+| 执行记录页偶发显示空表 | 终态进度帧在运行摘要写盘**之前**发出，页面立刻去读历史时摘要还不存在 | 先写摘要再发终态帧；新增用例断言 `append` 先于 `finish` |
+| 历史记录页越来越慢（1400+ 次运行后单次请求 750ms+） | `RunStore.list()` 每次都重新解析全部历史文件 | 按文件大小与修改时间缓存已解析的摘要，`stat` 改为并发读取；实测 755ms → 87ms |
+| 照片压缩跑了几十次后直接报“同名文件过多” | `writeUniqueFile` 的重名搜索上限只有 50 次 | 上限提到 1000 次，并用随机后缀兜底；新增用例连续写 120 次同名文件 |
+
+### 23.4 三端链路验证
+
+服务器中继、节点连接器与工作台页面串起来跑通了一遍：
+
+- 配对：工作台用 `relay:pair` 绑定设备，拿到设备令牌写进配置。
+- 节点上线：连接器长轮询中继，设备显示 `online: true`，可用工具数 12。
+- 派任务：通过中继下发 `csv_summary`，节点在本地执行后把结果回传，任务状态 `succeeded`，结果里的 `sum` 为 20。
+- 跨设备历史：`/relay/runs` 同时记录新旧两台设备的运行。
+- AI 取用：工作台「服务器」页给出可直接复制的接口说明（设备列表、身份清单、派任务、查结果、历史）。
+
+### 23.5 本轮验证
+
+`npm test` 111 项（110 通过、1 跳过）、`npm run test:web` 10 项、`npm run test:e2e` 20 项（连续多轮全通过）、`npm run test:desktop` 4 项、`npm run test:production` 1 项全部通过；类型检查与构建通过，`npm audit` 0 漏洞（升级 Electron/electron-builder 并锁定 tar、make-fetch-happen、cacache 版本）。
+
+打包产物单独验证：清空 `%APPDATA%/personal-workstation/` 后启动安装包内的 exe，4318 端口正常监听、`/api/tools` 返回 12 个工具、网页与静态资源 200、`text_stats` 与依赖 sharp 的 `photo_compress` 都能跑通，产物落在 `sandbox/downloads/`。
+
+

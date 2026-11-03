@@ -76,3 +76,20 @@ test('a recording failure warns without reversing a successful tool', async t =>
   assert.equal(result.ok, true);
   assert.deepEqual(result.meta.warnings, ['本次运行记录未保存。']);
 });
+
+test('the run summary is stored before the terminal progress frame is delivered', async t => {
+  const state = await mkdtemp(path.join(tmpdir(), 'workstation-runs-'));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const config = await loadConfig();
+  const runId = '11111111-2222-4333-8444-555555555555';
+  const order: string[] = [];
+  const store = new RunStore(state);
+  const originalAppend = store.append.bind(store);
+  store.append = async summary => { order.push('append'); return originalAppend(summary); };
+  const executor = new ToolExecutor(new ToolRegistry([echo]), { ...config, stateDirectory: state }, store);
+  executor.progress.subscribe(runId, progress => {
+    if (progress.status === 'succeeded') order.push('finish');
+  });
+  await executor.run('test_echo', { text: 'ordered' }, { source: 'web', runId });
+  assert.deepEqual(order, ['append', 'finish']);
+});

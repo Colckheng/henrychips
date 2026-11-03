@@ -1,9 +1,14 @@
 node_modules/
 dist/
+el-stage/
+release/
+release-build/
 .workstation/
 sandbox/downloads/
 test-results/
 playwright-report/
+.qoder/
 .env
 .env.*
 *.log
+probe-dir/

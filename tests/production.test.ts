@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { projectRoot, loadConfig } from '../src/core/config.js';
+import { getProjectRoot, loadConfig } from '../src/core/config.js';
 
 const exec = promisify(execFile);
 test('compiled CLI MCP and HTTP return identical CSV results; compiled PDF worker runs', { timeout: 30000 }, async t => {
@@ -18,17 +18,17 @@ test('compiled CLI MCP and HTTP return identical CSV results; compiled PDF worke
   const { configPath, ...disk } = config;
   await writeFile(configPath, JSON.stringify(disk));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const entry = path.join(projectRoot, 'dist/server/adapters/cli/main.js');
+  const entry = path.join(getProjectRoot(), 'dist/server/adapters/cli/main.js');
   const cli = await exec(process.execPath, [entry, 'run', 'csv_summary', '--input', '{"path":"samples/sales.csv"}', '--config', configPath], { cwd: tmpdir() });
   const cliResult = JSON.parse(cli.stdout);
   assert.equal(cliResult.data.columns[1].numeric.sum, 20);
   const client = new Client({ name: 'built-check', version: '1.0.0' });
   t.after(() => client.close());
-  await client.connect(new StdioClientTransport({ command: process.execPath, args: [path.join(projectRoot, 'dist/server/adapters/mcp/main.js'), '--config', configPath], cwd: tmpdir(), stderr: 'pipe' }));
+  await client.connect(new StdioClientTransport({ command: process.execPath, args: [path.join(getProjectRoot(), 'dist/server/adapters/mcp/main.js'), '--config', configPath], cwd: tmpdir(), stderr: 'pipe' }));
   assert.equal((await client.listTools()).tools.length, 12);
   const mcp = await client.callTool({ name: 'csv_summary', arguments: { path: 'samples/sales.csv' } });
   assert.deepEqual((mcp.structuredContent as { data: unknown }).data, cliResult.data);
-  const moduleUrl = pathToFileURL(path.join(projectRoot, 'dist/server/adapters/http/app.js')).href;
+  const moduleUrl = pathToFileURL(path.join(getProjectRoot(), 'dist/server/adapters/http/app.js')).href;
   const { buildApp } = await import(moduleUrl);
   const app = await buildApp(config);
   t.after(() => app.close());

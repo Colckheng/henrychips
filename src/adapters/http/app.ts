@@ -2,11 +2,11 @@ import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { projectRoot, type WorkstationConfig } from '../../core/config.js';
+import { getProjectRoot, type WorkstationConfig } from '../../core/config.js';
 import { createRuntime, type Runtime } from '../../core/runtime.js';
 import { registerRoutes } from './routes.js';
 
-export async function buildApp(config: WorkstationConfig, options: { dev?: boolean; runtime?: Runtime } = {}) {
+export async function buildApp(config: WorkstationConfig, options: { dev?: boolean; runtime?: Runtime; assetRoot?: string } = {}) {
   const app = Fastify({ bodyLimit: 1048576, logger: false });
   const hosts = new Set([`127.0.0.1:${config.http.port}`, `localhost:${config.http.port}`]);
   const origins = new Set([...hosts].map(host => `http://${host}`));
@@ -24,8 +24,8 @@ export async function buildApp(config: WorkstationConfig, options: { dev?: boole
     const status = (error as { statusCode?: number }).statusCode ?? 500;
     reply.code(status).send({ error: { code: status === 413 ? 'LIMIT_EXCEEDED' : status < 500 ? 'INVALID_INPUT' : 'TOOL_FAILED', message: status === 413 ? '请求内容超过大小限制。' : status < 500 ? '请求格式不正确。' : '请求处理失败，请稍后重试。' } });
   });
-  registerRoutes(app, config, options.runtime ?? createRuntime(config));
-  const webRoot = path.join(projectRoot, 'dist/web');
+  registerRoutes(app, config, options.runtime ?? createRuntime(config), { assetRoot: options.assetRoot });
+  const webRoot = path.join(options.assetRoot ?? getProjectRoot(), 'dist/web');
   if (existsSync(path.join(webRoot, 'index.html'))) {
     await app.register(fastifyStatic, { root: webRoot, wildcard: true, list: false, dotfiles: 'deny' });
   }

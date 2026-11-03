@@ -2,11 +2,28 @@ import type { FastifyInstance } from 'fastify';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { projectRoot, type WorkstationConfig } from '../../core/config.js';
+import { getProjectRoot, type WorkstationConfig } from '../../core/config.js';
 import type { Runtime } from '../../core/runtime.js';
 import type { ErrorCode } from '../../contracts/run.js';
 import type { IntegrationInfo } from '../../contracts/tool.js';
 import { openDirectory } from '../../core/opener.js';
+import { readRelayClientConfig, relayHeaders } from '../../relay/client-config.js';
+
+/** Short guide an AI can follow to drive the relay over HTTP. */
+function aiUsageGuide(address: string): string {
+  return [
+    `工作站中继服务地址：${address}`,
+    '',
+    '可用接口（都需要 Authorization: Bearer <设备令牌>）：',
+    `1. GET ${address}/relay/devices —— 列出设备，含 online 状态与各自可用的工具数量。`,
+    `2. GET ${address}/relay/node/identity —— 本机能力清单（工具、字段、平台）。`,
+    `3. POST ${address}/relay/tasks —— 下发任务，body 为 {"deviceId":"...","tool":"csv_summary","input":{...}}。`,
+    `4. GET ${address}/relay/tasks?deviceId=... —— 查询任务状态与结果。`,
+    `5. GET ${address}/relay/runs —— 跨设备运行历史。`,
+    '',
+    '产物文件保存在执行设备本地，不经服务器中转；需要文件时在设备端下载。',
+  ].join('\n');
+}
 
 function ownerTokenOf(request: { headers: Record<string, unknown> }): string | undefined {
   const header = request.headers['x-run-token'];
@@ -14,10 +31,35 @@ function ownerTokenOf(request: { headers: Record<string, unknown> }): string | u
 }
 
 const statuses: Record<ErrorCode, number> = { TOOL_NOT_FOUND: 404, INVALID_INPUT: 400, ACCESS_DENIED: 403, FILE_NOT_FOUND: 404, UNSUPPORTED_FORMAT: 422, LIMIT_EXCEEDED: 413, BUSY: 429, NETWORK_ERROR: 502, TIMEOUT: 504, CANCELLED: 408, TOOL_FAILED: 500 };
-export function registerRoutes(app: FastifyInstance, config: WorkstationConfig, runtime: Runtime) {
+export function registerRoutes(app: FastifyInstance, config: WorkstationConfig, runtime: Runtime, options: { assetRoot?: string } = {}) {
   app.get('/api/health', async () => ({ status: 'ok', version: '0.1.0' }));
   // Identity of this node: the server relay uses it to route tasks and to
   // know which capabilities the node actually has.
+  app.get('/api/relay/status', async () => {
+    const relay = await readRelayClientConfig(config.configPath);
+    if (!relay) {
+      return { configured: false, address: null, deviceId: null, deviceName: null, connected: false, devices: [], runs: [], aiUsage: '尚未配置服务器连接。' };
+    }
+    const headers = relayHeaders(relay);
+    const base = relay.address.replace(/\/$/, '');
+    const [devices, runs] = await Promise.all([
+      fetch(`${base}/relay/devices`, { headers }).then(response => response.json()).catch(() => ({ devices: [] })),
+      fetch(`${base}/relay/runs`, { headers }).then(response => response.json()).catch(() => ({ runs: [] })),
+    ]);
+    const list = (devices as { devices?: Array<{ id: string; name: string; online?: boolean; lastSeen?: number; identity?: { tools?: unknown[] } | null }> }).devices ?? [];
+    const history = (runs as { runs?: Array<{ id: string; deviceId: string; deviceName: string; tool: string; status: string; startedAt: number }> }).runs ?? [];
+    const self = list.find(device => device.id === relay.deviceId);
+    return {
+      configured: true,
+      address: relay.address,
+      deviceId: relay.deviceId,
+      deviceName: relay.deviceName,
+      connected: Boolean(self?.online),
+      devices: list.map(device => ({ id: device.id, name: device.name, online: Boolean(device.online), lastSeen: device.lastSeen ?? 0, tools: device.identity?.tools?.length ?? 0 })),
+      runs: history.slice(0, 30),
+      aiUsage: aiUsageGuide(relay.address),
+    };
+  });
   app.get('/api/node/identity', async () => ({
     version: '0.1.0',
     platform: process.platform,
@@ -121,8 +163,9 @@ export function registerRoutes(app: FastifyInstance, config: WorkstationConfig, 
     return runtime.store.list(query.data.limit);
   });
   app.get('/api/integrations', async (): Promise<IntegrationInfo> => {
-    const mcpEntry = path.join(projectRoot, 'dist/server/adapters/mcp/main.js');
-    const cliEntry = path.join(projectRoot, 'dist/server/adapters/cli/main.js');
+    const assetRoot = options.assetRoot ?? getProjectRoot();
+    const mcpEntry = path.join(assetRoot, 'dist/server/adapters/mcp/main.js');
+    const cliEntry = path.join(assetRoot, 'dist/server/adapters/cli/main.js');
     const normalize = (value: string) => value.replaceAll('\\', '/');
     return {
       configPath: normalize(config.configPath), workspaceRoot: normalize(config.workspaceRoot), networkEnabled: config.network.enabled,

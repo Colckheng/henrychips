@@ -5,10 +5,10 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { projectRoot, loadConfig } from '../../src/core/config.js';
+import { getProjectRoot, loadConfig } from '../../src/core/config.js';
 
 async function runCli(args: string[], configPath: string) {
-  const child = spawn(process.execPath, ['--import', pathToFileURL(path.join(projectRoot, 'node_modules/tsx/dist/loader.mjs')).href, path.join(projectRoot, 'src/adapters/cli/main.ts'), ...args, '--config', configPath], { cwd: tmpdir(), stdio: 'pipe' });
+  const child = spawn(process.execPath, ['--import', pathToFileURL(path.join(getProjectRoot(), 'node_modules/tsx/dist/loader.mjs')).href, path.join(getProjectRoot(), 'src/adapters/cli/main.ts'), ...args, '--config', configPath], { cwd: tmpdir(), stdio: 'pipe' });
   let stdout = '', stderr = '';
   child.stdout.on('data', chunk => { stdout += chunk; });
   child.stderr.on('data', chunk => { stderr += chunk; });
