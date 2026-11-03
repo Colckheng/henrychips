@@ -8,5 +8,7 @@ export default defineConfig({
   reporter: 'list',
   use: { baseURL: 'http://127.0.0.1:4318', trace: 'retain-on-failure', screenshot: 'only-on-failure' },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'], channel: 'chrome' } }],
-  webServer: { command: 'npm start', url: 'http://127.0.0.1:4318/api/health', reuseExistingServer: true, timeout: 30000 },
+  // The suite must not run against a stale build. Reusing an already running
+  // server would silently test the previous code.
+  webServer: { command: 'npm run build && npm start', url: 'http://127.0.0.1:4318/api/health', reuseExistingServer: false, timeout: 60000 },
 });

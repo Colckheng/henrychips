@@ -1,10 +1,10 @@
 # 在服务器上部署中继服务
 
-你的服务器是 Firecracker 微虚拟机：它提供虚拟化但不含容器运行时，所以**不要用 Docker**，直接跑 Node 进程 + systemd。下面是完整步骤。
+服务器是 InstaBox 免费机（4 核、8GB 内存、16GB 系统盘 + 20GB 持久化 `/data`），Debian 13、Firecracker 微虚拟机：它提供虚拟化但不含容器运行时，所以**不要用 Docker**，直接跑 Node 进程 + systemd。下面是完整步骤。
 
 ## 1. 准备 Node
 
-Firecracker 里的 Debian 13 需要 Node 22.13 以上（工作站与中继同版本最省事）：
+Firecracker 里的 Debian 13 需要 Node 22.13 以上（中继用的是 Node 内置的 `node:sqlite`，22.13 起可用）：
 
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
@@ -12,12 +12,18 @@ apt-get install -y nodejs
 node --version
 ```
 
+数据放在 `/data` 而不是系统盘：系统盘只有 16GB，重启后可能被清空。下面的 `/opt/henry/relay/data` 请换成 `/data/henry-relay`。
+
 ## 2. 部署中继
+
+中继只需要 `dist/server/relay/`、`dist/server/contracts/`、`dist/server/core/` 与 `node_modules`，不需要整个工作站：
 
 ```bash
 sudo mkdir -p /opt/henry/relay/data
 sudo useradd --system --home /opt/henry/relay henry
-# 把 relay 目录、dist 与 node_modules 复制到 /opt/henry/relay
+# 在本地构建后复制产物
+#   npm run build
+#   scp -r dist/server/relay dist/server/contracts dist/server/core node_modules <服务器>:/opt/henry/relay/
 cd /opt/henry/relay
 sudo chown -R henry:henry /opt/henry/relay
 ```
@@ -28,10 +34,12 @@ sudo chown -R henry:henry /opt/henry/relay
 node -e 'const c=require("crypto");console.log(JSON.stringify({
   address:"http://<服务器公网IP>:4319", port:4319,
   pairCode:c.randomBytes(3).toString("hex"),
-  dataDirectory:"/opt/henry/relay/data",
+  dataDirectory:"/data/henry-relay",
   deviceToken:c.randomBytes(24).toString("base64url")},null,2))' > relay.config.json
 sudo chmod 600 relay.config.json
 ```
+
+`address` 要写完整（含 `http://`），客户端按这个地址连接；`port` 只用于本机监听。数据目录放在 `/data` 上，避免系统盘被清空时丢设备登记与运行历史。
 
 ## 3. 开机自启
 
@@ -122,3 +130,7 @@ curl -H "Authorization: Bearer <deviceToken>" "http://<服务器IP>:4319/relay/t
 - 中继**不执行工具**，只做登记、路由与结果中转；工具永远在设备本地跑，产物也留在设备本地。
 - `node:sqlite` 是 Node 22 的内置实验特性，Node 22.13 起可用；如果服务器上更早的 Node，请改用 `better-sqlite3`。
 - 设备令牌泄露等于任何人都能派任务给你的设备，务必只发给可信设备，并定期更换。
+- **公网暴露前必须做的事**：
+  - 配置里一定要写 `deviceToken`。不写它，中继对所有请求一律放行，任何人都能派任务。
+  - 中继目前**没有速率限制**。正式对外前请在前面加一层反向代理做限流，或先只在局域网/可信网络里用。
+  - 4319 是明文 HTTP。配对码和令牌在传输中可见；对外时用 Caddy 套一层 TLS（见第 5 节）。

@@ -8,5 +8,5 @@
     "types": ["node"],
     "sourceMap": true
   },
-  "include": ["src/contracts/**/*.ts", "src/core/**/*.ts", "src/tools/**/*.ts", "src/adapters/**/*.ts"]
+  "include": ["src/contracts/**/*.ts", "src/core/**/*.ts", "src/tools/**/*.ts", "src/adapters/**/*.ts", "src/relay/**/*.ts"]
 }

@@ -1,8 +1,8 @@
 # 个人工作站：架构设计与详细实施计划
 
-> 状态：2026-11-02 首版框架与六个示例工具已完成；第二轮影音与文档工具（B 站、抖音、去水印、格式转换、照片压缩）已实现并验证。第 19 节记录证据、未覆盖范围和实际启动方式。
+> 状态：2026-11-02 首版框架与六个示例工具已完成；第二轮影音与文档工具（B 站、抖音、去水印、格式转换、照片压缩）已实现并验证；2026-11-03 增加 XLSX 表格分析、Electron 桌面端外壳、服务器中继与工作台「服务器」页。第 19 节记录各轮证据，第 23 节记录桌面端与中继的实现细节。
 >
-> 实施方式：按本文的任务依次交付，每个任务经过验证后继续；使用 `superpowers:executing-plans` 协调，独立模块可交给子代理。当前目录不是 Git 仓库，按已确认的项目位置直接实施，不初始化或提交 Git，也不发布远程服务。
+> 实施方式：按本文的任务依次交付，每个任务经过验证后继续；使用 `superpowers:executing-plans` 协调，独立模块可交给子代理。项目已按用户要求初始化 Git（`main` 分支）并按阶段提交，但不发布远程服务。
 
 **目标：** 建立一个本地优先、持续扩展的个人工具工作站，让人在网页中操作工具，让 AI 通过 MCP 调用同一套能力，让脚本通过 CLI 自动化执行。
 
@@ -135,8 +135,15 @@ CLI、MCP 不依赖网页服务在线。三者加载同一个配置文件，使�
 | PDF | `pdfjs-dist` | 使用 Node 兼容入口提取文字，隔离到 Worker |
 | HTML | `linkedom` | 解析 HTML，提取标题和正文，不执行脚本 |
 | HTTP 出站 | `undici` | 支持对实际连接目标实施网络限制 |
+| 网络地址判断 | `ipaddr.js` | 判断公网/私网/保留地址，不靠前缀字符串匹配 |
+| 文档写入 | `docx` | 生成 Word 文档 |
+| 文档读取 | `mammoth` | 读取 Word 文本 |
+| PDF 写入 | `pdf-lib` + `@pdf-lib/fontkit` | 生成 PDF 并内嵌子集化的中文 TrueType 字体 |
+| 图片处理 | `sharp` | 预编译 Windows 二进制，压缩与格式转换 |
+| 表格读取 | `read-excel-file` | 读取 XLSX 工作簿，只读 |
+| 桌面外壳 | Electron 45 | 托盘、开机自启；自带 Node 24，可加载 `node:sqlite` 与 sharp |
 | 开发运行 | `tsx`、`concurrently` | 分别运行 TypeScript 入口与并行开发服务 |
-| 测试 | `node:test`、`@playwright/test` | 核心行为、协议集成、网页端到端 |
+| 测试 | `node:test`、`@playwright/test` | 核心行为、协议集成、网页端到端、桌面外壳 |
 
 版本约定：已核对兼容性并将实际版本固定于 `package.json` 与锁文件。PDF 的 Node 入口、Worker 退出方式及 MCP 的 Zod 输入输出兼容性均经过实际编译与协议测试；版本摘要见第 19 节。
 
@@ -155,19 +162,25 @@ D:/HenryChips/
 ├─ tsconfig.web.json
 ├─ tsconfig.tests.json
 ├─ playwright.config.ts
+├─ playwright.electron.config.ts
 ├─ vite.config.ts
 ├─ tailwind.config.ts
 ├─ postcss.config.cjs
 ├─ index.html
 ├─ workstation.config.json
+├─ electron-builder.json
 ├─ .gitignore
+├─ electron/main.mjs              桌面外壳（托盘、开机自启、内嵌服务）
+├─ scripts/
+│  ├─ create-samples.ts
+│  └─ stage-electron.mjs          打包前准备 Electron 运行时
 ├─ src/
 │  ├─ contracts/
 │  │  ├─ tool.ts
-│  │  └─ run.ts
+│  │  ├─ run.ts
+│  │  └─ relay.ts
 │  ├─ core/
 │  │  ├─ config.ts
-│  │  ├─ converter.ts
 │  │  ├─ errors.ts
 │  │  ├─ define-tool.ts
 │  │  ├─ registry.ts
@@ -176,7 +189,15 @@ D:/HenryChips/
 │  │  ├─ public-http.ts
 │  │  ├─ process-probe.ts
 │  │  ├─ runtime.ts
-│  │  └─ run-store.ts
+│  │  ├─ run-store.ts
+│  │  ├─ progress.ts
+│  │  ├─ opener.ts
+│  │  ├─ douyin-session.ts
+│  │  ├─ fonts.ts
+│  │  ├─ html-blocks.ts
+│  │  ├─ markdown.ts
+│  │  ├─ docx-build.ts
+│  │  └─ pdf-layout.ts
 │  ├─ tools/
 │  │  ├─ index.ts
 │  │  ├─ text-stats.ts
@@ -193,14 +214,24 @@ D:/HenryChips/
 │  │  ├─ douyin-nowatermark.ts
 │  │  ├─ doc-convert.ts
 │  │  ├─ doc-convert-helpers.ts
-│  │  └─ photo-compress.ts
+│  │  ├─ photo-compress.ts
+│  │  └─ xlsx-summary.ts
 │  ├─ adapters/
 │  │  ├─ http/app.ts
 │  │  ├─ http/server.ts
 │  │  ├─ http/routes.ts
 │  │  ├─ cli/main.ts
 │  │  ├─ mcp/server.ts
-│  │  └─ mcp/main.ts
+│  │  ├─ mcp/main.ts
+│  │  └─ relay/
+│  │     ├─ main.ts
+│  │     └─ pair.ts
+│  ├─ relay/
+│  │  ├─ main.ts
+│  │  ├─ server.ts
+│  │  ├─ store.ts
+│  │  ├─ config.ts
+│  │  └─ client-config.ts
 │  └─ web/
 │     ├─ main.tsx
 │     ├─ App.tsx
@@ -208,6 +239,7 @@ D:/HenryChips/
 │     ├─ form.ts
 │     ├─ presentation.ts
 │     ├─ router.ts
+│     ├─ run-store.ts
 │     ├─ useToolRun.ts
 │     ├─ styles.css
 │     ├─ components/
@@ -224,15 +256,21 @@ D:/HenryChips/
 │        ├─ Catalog.tsx
 │        ├─ ToolDetail.tsx
 │        ├─ History.tsx
-│        └─ Integrations.tsx
+│        ├─ Integrations.tsx
+│        └─ Servers.tsx
 ├─ tests/
 │  ├─ core/
 │  ├─ tools/
 │  ├─ adapters/
+│  ├─ relay/                     中继链路与配置往返
+│  ├─ electron/                   桌面外壳行为
 │  ├─ e2e/                       浏览器场景与前端单元测试
 │  ├─ fixtures/                  夹具在测试中动态生成，目录当前为空
 │  └─ production.test.ts
-├─ scripts/create-samples.ts
+├─ deploy/
+│  ├─ RELAY-DEPLOY.md            服务器部署步骤
+│  └─ henry-relay.service        systemd 单元
+├─ build/icon.png
 ├─ test-results/                 临时浏览器报告与生产验收配置
 ├─ sandbox/
 │  ├─ inbox/
@@ -472,7 +510,9 @@ export interface EnvironmentReport {
 - 无 `Origin` 的本地 CLI/调试请求允许访问；这不是面向远程用户的认证系统。
 - 浏览器展示结果使用文本或安全组件，不把抓取到的 HTML 注入 DOM。
 
-## 8. 六个示例工具
+## 8. 工具清单
+
+首版六个示例工具见 8.1–8.6；8.7 集中记录后来追加的影音、去水印、格式转换、照片压缩与 XLSX 表格分析。当前共 12 个注册工具。
 
 ### 8.1 文件整理预览：`files_plan`
 
@@ -1025,7 +1065,7 @@ MCP 测试必须真的启动项目进程并完成协议交互，不能只检查�
 | `npm test` | 运行核心、六工具和适配器测试，不依赖外网 |
 | `npm run test:web` | 表单序列化与结果渲染单元检查 |
 | `npm run test:production` | 构建后检查 CLI/MCP/HTTP 结果一致性和 PDF Worker |
-| `npm run test:e2e` | 启动或复用本地服务，执行 20 项 Chrome 浏览器测试 |
+| `npm run test:e2e` | 先构建再启动本地服务，执行 20 项 Chrome 浏览器测试；不复用已在运行的服务 |
 | `npm run test:desktop` | 用 Playwright 驱动 Electron 外壳，检查窗口、托盘、关窗留驻与开机自启 |
 | `npm run samples` | 生成可提取文本的两页 PDF 样例，保留已有文件 |
 | `npm run build` | 生成 `dist/server` 与 `dist/web` |
@@ -1110,6 +1150,8 @@ node "D:/HenryChips/dist/server/adapters/mcp/main.js" --config "D:/HenryChips/wo
 - [x] 每个里程碑均定义了独立可演示的能力。
 - [x] 计划中的代码块是契约或测试示例，没有把未实现代码描述为现成文件。
 - [x] 计划阶段与实施阶段已明确分开，当前实现进度在第 19 节持续记录。
+- [x] 第 5 节目录树与实际代码一致，新增的桌面端、中继与服务器页面均已登记。
+- [x] 已确认的服务器条件记录在第 20.7 节，未完成项（速率限制）明确标注在第 21 节与部署文档。
 
 ### 17.2 用户审阅时最值得调整的三项
 
@@ -1160,7 +1202,7 @@ node "D:/HenryChips/dist/server/adapters/mcp/main.js" --config "D:/HenryChips/wo
 
 ### 2026-11-02：交付与运行
 
-- 已注册 11 个工具：`files_plan`、`text_stats`、`csv_summary`、`pdf_extract`、`web_extract`、`env_inspect`、`bilibili_video`、`douyin_video`、`douyin_nowatermark`、`doc_convert`、`photo_compress`。
+- 已注册 11 个工具：`files_plan`、`text_stats`、`csv_summary`、`pdf_extract`、`web_extract`、`env_inspect`、`bilibili_video`、`douyin_video`、`douyin_nowatermark`、`doc_convert`、`photo_compress`。`xlsx_summary` 于 2026-11-03 加入，注册数为 12。
 - 当前可访问工作台：`http://127.0.0.1:4318/`；开发页面为 `http://127.0.0.1:5173/`。本轮额外使用 `http://127.0.0.1:4319/` 验证编译生产模式，不改动正式配置。
 - 首次安装/新终端：在项目目录运行 `npm ci` → `npm run samples` → `npm run build` → `npm start`。依赖和样例已在本机准备完成，再次启动通常只需 `npm start`；当前服务已运行时无需重复启动。
 - 修改代码时使用 `npm run dev`，前端访问 5173，API 使用 4318。若端口已被已有实例占用，先使用该实例或在所属终端正常停止后再启动；不要终止不明进程。初始默认 4310 与 QQ 冲突，因此改为 4318。
@@ -1235,9 +1277,16 @@ node "D:/HenryChips/dist/server/adapters/mcp/main.js" --config "D:/HenryChips/wo
 
 - 按用户要求初始化 Git（`main` 分支），并把此前的工作按阶段整理成可读的历史：工程骨架 → 核心执行器与基础工具 → 三个调用入口 → 网页工作台 → 内置转换与影音工具 → 样例与生产验证。未配置远程仓库，未推送任何内容。
 - 新增运行进度通道：工具通过 `reportProgress` 上报阶段与真实进度，`ProgressStore` 按运行号维护状态，网页端用 SSE 订阅（不可用时降级轮询），界面显示进度条、当前阶段与步骤时间线。
-- 新增 `xlsx_summary` 工具：用 ExcelJS 读取工作簿，输出工作表清单、表头、行数与逐列类型与数值统计，只读不改写。
+- 新增 `xlsx_summary` 工具：在进程内读取工作簿，输出工作表清单、表头、行数与逐列类型与数值统计，只读不改写。读取库最初选的是 ExcelJS，因其 `uuid` 传递依赖存在已知漏洞而改用 `read-excel-file`，安装审计恢复为 0。
 - 排障记录：PDF 工作线程原本用 `once('message')` 接收结果，改为进度消息后第一条消息被占用导致结果丢失，改为持续监听并区分进度帧；SSE 在没有进行中的任务时不推送首帧会让客户端一直等待，改为总是先推一帧；服务端在运行结束时主动关闭事件流，避免客户端中断被记为失败请求。
 - 回归：`npm test` 97 项、`npm run test:web` 10 项、`npm run test:e2e` 18 项、`npm run test:production` 1 项全部通过；类型检查、构建与依赖审计通过。
+
+### 2026-11-03：桌面端外壳、服务器中继与工作台服务器区域
+
+- 桌面端从 PWA 外壳升级为 Electron 45（自带 Node 24，可直接加载 `node:sqlite` 与 sharp），服务跑在主进程内，配置与工作区移到 `%APPDATA%/personal-workstation/`。详见第 23 节。
+- 新增服务器中继（Node + 内置 SQLite）、节点连接器与工作台「服务器」页；产物留在设备本地，服务器只存摘要。详见第 23.4 节。
+- 依赖审计从 14 处漏洞降到 0（升级 Electron 与 electron-builder，并锁定 `tar`、`make-fetch-happen`、`cacache`）。
+- 回归：`npm test` 111 项（110 通过、1 跳过）、`npm run test:web` 10 项、`npm run test:e2e` 20 项、`npm run test:desktop` 4 项、`npm run test:production` 1 项全部通过；类型检查与构建通过。
 
 
 ## 20. 三端扩展的架构调研（2026-11-03）
@@ -1301,18 +1350,18 @@ node "D:/HenryChips/dist/server/adapters/mcp/main.js" --config "D:/HenryChips/wo
 6. 桌面端外壳：PWA manifest + service worker + 启动器脚本；可选 Electron 托盘版。
 7. 前端复用：现有界面已通过 375px 与 1440px 布局验证，天然可在手机浏览器使用，这是“手机端不做原生 App”的前提。
 
-### 20.7 待用户确认的服务器条件
+### 20.7 服务器条件（已由用户确认，2026-11-03）
 
-1. 服务器形态与地域：自有 VPS / 云主机 / NAS？是否已有域名与证书？
-2. 是否接受用 Docker 部署中继服务（推荐），还是希望直接跑 Node 进程？
-3. 节点与手机端的鉴权方式：设备令牌 + 扫码配对是否可接受？
-4. 产物是否需要经服务器中转，还是保留在节点本地按需下载？
-5. 桌面端是否需要开机自启与托盘（决定 PWA 还是 Electron）？
+1. 服务器形态与地域：InstaBox 免费机（4 核、8GB 内存、16GB 系统盘 + 20GB 持久化 `/data`），Debian 13、Firecracker 微虚拟机，无域名。
+2. 部署方式：**不用 Docker**。Firecracker 不含容器运行时，直接跑 Node 进程 + systemd。
+3. 节点与手机端的鉴权方式：设备令牌 + 配对码，已接受。
+4. 产物是否经服务器中转：**留在节点本地**按需下载，服务器只存摘要。
+5. 桌面端是否需要开机自启与托盘：**需要**，因此选 Electron 而不是 PWA。
 
 
-## 21. 三端扩展的实施步骤（待服务器条件确认后执行）
+## 21. 三端扩展的实施步骤（已执行，证据见第 23 节）
 
-按第 20 节的结论分四步推进，每步都能单独交付与验证：
+按第 20 节的结论分四步推进，每步都能单独交付与验证。第 1、2、4 步与第 23 节的桌面端实现已经落地；第 3 步先做了 PWA 外壳，随后按用户决定升级为 Electron。
 
 1. **节点身份与鉴权**：新增设备 ID 与 Bearer 令牌中间件，覆盖现有 `/api/*`；本地开发默认关闭鉴权，配置开启。验证：未授权请求被拒，带令牌正常。
 2. **节点能力清单与目录**：新增 `GET /api/node/identity`（版本、平台、是否具备浏览器与写文件能力、可用工具）。服务器据此决定把任务路由到哪个节点。验证：不同能力组合下目录正确过滤。
@@ -1321,7 +1370,9 @@ node "D:/HenryChips/dist/server/adapters/mcp/main.js" --config "D:/HenryChips/wo
 
 **与现有代码的关系**：核心执行器、注册表、工具契约与网页界面全部复用；改动集中在 HTTP 适配层（鉴权与节点接口）、前端运行仓库（远程运行源）与新增的服务器服务。
 
-**验证口径**：每个节点各自能跑通原有 101 项后端测试与 20 项浏览器测试；中继服务需要新增“任务下发→节点执行→进度回传→手机取回结果”的端到端用例；公网暴露前必须完成令牌鉴权与速率限制，且不得让未鉴权请求触达执行面。
+**验证口径**：每个节点各自能跑通原有后端测试与浏览器测试；中继服务需要新增“任务下发→节点执行→进度回传→手机取回结果”的端到端用例（已在 `tests/relay/chain.test.ts` 落地）；公网暴露前必须完成令牌鉴权与速率限制，且不得让未鉴权请求触达执行面。
+
+**尚未完成**：中继目前**没有速率限制**，且配置里不写 `deviceToken` 时会对所有请求放行。这两点在正式对公网暴露前必须补上，或先只在局域网内使用。详见 `deploy/RELAY-DEPLOY.md` 的「公网暴露前必须做的事」。
 
 ## 22. 项目审查结果与修复（2026-11-03）
 
@@ -1388,16 +1439,19 @@ node "D:/HenryChips/dist/server/adapters/mcp/main.js" --config "D:/HenryChips/wo
 
 打包产物另外做了真机验证：清空 `%APPDATA%/personal-workstation/` 后启动安装包内的 exe，4318 端口正常监听、`/api/tools` 返回 12 个工具、网页与静态资源 200、`text_stats` 与依赖 sharp 的 `photo_compress` 都能跑通，产物落在 `sandbox/downloads/`。
 
-### 23.3 本轮修掉的三个真实缺陷
+### 23.3 本轮修掉的真实缺陷
 
 | 缺陷 | 根因 | 修复 |
 | --- | --- | --- |
 | 执行记录页偶发显示空表 | 终态进度帧在运行摘要写盘**之前**发出，页面立刻去读历史时摘要还不存在 | 先写摘要再发终态帧；新增用例断言 `append` 先于 `finish` |
 | 历史记录页越来越慢（1400+ 次运行后单次请求 750ms+） | `RunStore.list()` 每次都重新解析全部历史文件 | 按文件大小与修改时间缓存已解析的摘要，`stat` 改为并发读取；实测 755ms → 87ms |
 | 照片压缩跑了几十次后直接报“同名文件过多” | `writeUniqueFile` 的重名搜索上限只有 50 次 | 上限提到 1000 次，并用随机后缀兜底；新增用例连续写 120 次同名文件 |
+| 端到端用例偶发失败，且失败点会“换人” | Playwright 的 `reuseExistingServer: true` 会复用已在运行的旧服务，用例实际测的是上一版代码 | `webServer` 改为 `npm run build && npm start` 且不复用已有服务；端口被占用时明确报错而不是静默测旧代码 |
+| 服务器上跑不起来中继 | `src/relay/**` 不在 `tsconfig.server.json` 的 `include` 里，编译产物里根本没有 `dist/server/relay/main.js`，而 systemd 单元指向的正是它 | 把 `src/relay/**` 纳入编译，并实测编译产物可启动 |
+| systemd 单元起不来 | 单元文件名是 `henry-relay.service`，里面的 `Unit=` 却写成 `henry-workstation`；`ExecStart` 指向的路径与实际产物不符 | 统一为 `henry-relay` 与 `dist/server/relay/main.js` |
+| 中继启动日志地址重复 | `config.address` 本身已含 `http://`，日志又拼了一次 | 直接打印 `config.address` |
 
 ### 23.4 三端链路验证
-
 服务器中继、节点连接器与工作台页面串起来跑通了一遍：
 
 - 配对：工作台用 `relay:pair` 绑定设备，拿到设备令牌写进配置。

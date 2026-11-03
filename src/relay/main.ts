@@ -11,7 +11,8 @@ try {
   const relay = new RelayServer(config);
   const server = createServer((request, response) => { void relay.handle(request, response); });
   server.listen(config.port, '0.0.0.0', () => {
-    process.stderr.write(`中继服务已启动：http://${config.address}:${config.port}\n`);
+    // The address already carries the scheme, so it is used as is.
+    process.stderr.write(`中继服务已启动：${config.address}\n`);
   });
   const stop = () => { server.close(); process.exit(0); };
   process.on('SIGINT', stop);
