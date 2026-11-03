@@ -12,20 +12,22 @@ apt-get install -y nodejs
 node --version
 ```
 
-数据放在 `/data` 而不是系统盘：系统盘只有 16GB，重启后可能被清空。下面的 `/opt/henry/relay/data` 请换成 `/data/henry-relay`。
+数据放在 `/data` 而不是系统盘：系统盘只有 16GB，重启后可能被清空。代码放 `/opt/henry/relay`，数据目录用 `/data/henry-relay`，两者在下面的配置与 systemd 单元里保持一致。
 
 ## 2. 部署中继
 
-中继只需要 `dist/server/relay/`、`dist/server/contracts/`、`dist/server/core/` 与 `node_modules`，不需要整个工作站：
+中继只依赖 `dist/server/relay/` 与 `zod`，不需要整个工作站。实测最小部署集：`dist/server/relay/` + `node_modules` + 一个 `{"type":"module"}` 的 `package.json`（Node 22 缺省会退化成“按 ESM 重新解析”的警告模式）。
 
 ```bash
-sudo mkdir -p /opt/henry/relay/data
+sudo mkdir -p /opt/henry/relay /data/henry-relay
 sudo useradd --system --home /opt/henry/relay henry
-# 在本地构建后复制产物
+# 在本地构建后复制产物（本地项目目录执行）
 #   npm run build
-#   scp -r dist/server/relay dist/server/contracts dist/server/core node_modules <服务器>:/opt/henry/relay/
+#   scp -r dist/server/relay node_modules <服务器>:/opt/henry/relay/
 cd /opt/henry/relay
+echo '{"type":"module"}' > package.json
 sudo chown -R henry:henry /opt/henry/relay
+sudo chown -R henry:henry /data/henry-relay
 ```
 
 生成配置（`pairCode` 是手机和桌面端配对用的口令，`deviceToken` 是所有设备都要带的共享令牌）：
