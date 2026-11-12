@@ -256,7 +256,11 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
             }
             continue;
           }
-          if (statusCode < 200 || statusCode >= 300) throw new ToolError('NETWORK_ERROR', '网页服务器未返回成功响应。');
+          if (statusCode < 200 || statusCode >= 300) {
+            // A caller that wants to read the status of an error answer, a
+            // probe of a direct link for instance, asks for it explicitly.
+            if (!options?.allowErrorStatus) throw new ToolError('NETWORK_ERROR', '网页服务器未返回成功响应。');
+          }
           const contentType = typeof headers['content-type'] === 'string' ? headers['content-type'] : '';
           const mime = contentType.split(';')[0].trim().toLowerCase();
           if (kind === 'html' && !['text/html', 'application/xhtml+xml'].includes(mime)) {

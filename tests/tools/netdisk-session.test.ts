@@ -164,6 +164,24 @@ test('probes the direct link and reports where it landed', async () => {
   assert.equal(sent.referer, 'https://pan.quark.cn/');
 });
 
+test('reports the status of an error answer to a probe', async () => {
+  const seen: SeenCall[] = [];
+  const http = fakeHttp(seen);
+  // A probe of a direct link needs the status of the answer, so an error
+  // status reaches the caller instead of becoming a failure.
+  http.getRaw = async (url, _signal, options) => {
+    seen.push({ method: 'GET', url, headers: options?.headers, maxBytes: options?.maxBytes, at: performance.now() });
+    return {
+      finalUrl: url, status: 403, contentType: 'application/octet-stream', bytes: new Uint8Array(),
+      setCookie: [], headers: {},
+    };
+  };
+  const session = new NetdiskSession({ http, signal: new AbortController().signal });
+  const probe = await session.probe('https://cdn.test/file.bin');
+  assert.equal(probe.status, 403);
+  assert.equal(probe.contentType, 'application/octet-stream');
+});
+
 test('hands out the response headers and the set cookie of a request', async () => {
   const seen: SeenCall[] = [];
   const session = new NetdiskSession({ http: fakeHttp(seen), signal: new AbortController().signal });

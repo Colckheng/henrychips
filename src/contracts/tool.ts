@@ -49,6 +49,8 @@ export interface PublicHttpRequest {
   allowedPorts?: number[];
   /** 同时设定响应头超时与响应体超时，二者含义不同：前者是首字节的等待上限，后者是两段数据之间的间隔上限。默认 10000。 */
   timeoutMs?: number;
+  /** Lets the caller read the status of an error answer instead of a failure. */
+  allowErrorStatus?: boolean;
 }
 export interface PublicHttpResponse {
   finalUrl: string;

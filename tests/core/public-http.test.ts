@@ -143,6 +143,19 @@ test('rejects non-HTML, non-success statuses and oversized declared or streamed 
   await assert.rejects(http.getHtml('http://public.test/stream', signal()), { code: 'LIMIT_EXCEEDED' });
 });
 
+test('hands the status of an error answer to a caller that asks for it', async (t) => {
+  await transport(t, (req, res) => {
+    if (req.url === '/gone') { res.writeHead(403, { 'content-type': 'application/octet-stream' }); res.end('no'); return; }
+    res.writeHead(500, { 'content-type': 'application/octet-stream' }); res.end('no');
+  });
+  const http = createPublicHttp(1024);
+  // The default still turns an error answer into a failure.
+  await assert.rejects(http.getRaw('http://public.test/gone', signal()), { code: 'NETWORK_ERROR' });
+  // A probe of a direct link needs the status itself, so it asks for it.
+  const response = await http.getRaw('http://public.test/gone', signal(), { allowErrorStatus: true });
+  assert.equal(response.status, 403);
+});
+
 test('counts UTF-8 bytes rather than string characters', async (t) => {
   await transport(t, (_req, res) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end('界界界'); });
   await assert.rejects(createPublicHttp(8).getHtml('http://public.test/', signal()), { code: 'LIMIT_EXCEEDED' });

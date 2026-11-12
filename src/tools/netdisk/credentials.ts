@@ -1,13 +1,11 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import type { NetdiskPlatform } from './types.js';
+import type { NetdiskPlatform, PlatformCredential } from './types.js';
 
-export interface PlatformCredential {
-  bduss?: string;
-  username?: string;
-  password?: string;
-}
+// The credential shape belongs to the contract of the platform adapters, so it
+// is defined there and only read here.
+export type { PlatformCredential } from './types.js';
 
 export type CredentialStore = Record<string, PlatformCredential>;
 

@@ -218,7 +218,7 @@ export class NetdiskSession {
   }
 
   /** Reads the headers of a one byte range request, to learn whether the direct link supports resuming. */
-  async probe(url: string, headers?: Record<string, string>): Promise<{ finalUrl: string; status: number; location?: string; contentRange?: string; acceptRanges?: string }> {
+  async probe(url: string, headers?: Record<string, string>): Promise<{ finalUrl: string; status: number; location?: string; contentRange?: string; acceptRanges?: string; contentType?: string }> {
     return this.send(url, headers, async (merged) => {
       const response = await this.options.http.getRaw(url, this.options.signal, {
         // The probe asks for one byte, so its own range wins over the caller's.
@@ -226,6 +226,9 @@ export class NetdiskSession {
         // names are compared in lower case further down.
         headers: { ...withoutRange(merged), Range: 'bytes=0-0' },
         maxBytes: 1024,
+        // The status of an error answer is the answer of a probe, so it is
+        // read instead of turned into a failure.
+        allowErrorStatus: true,
       });
       return {
         finalUrl: response.finalUrl,
@@ -233,6 +236,9 @@ export class NetdiskSession {
         location: response.headers.location,
         contentRange: response.headers['content-range'],
         acceptRanges: response.headers['accept-ranges'],
+        // The type tells a file apart from an interstitial page, which is the
+        // difference between a usable link and a verification step.
+        contentType: response.contentType,
       };
     });
   }
