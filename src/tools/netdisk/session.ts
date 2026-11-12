@@ -18,19 +18,38 @@ export interface NetdiskRawResponse {
   setCookie: string[];
 }
 
+/**
+ * The body a raw request may read. A raw request only looks at the response
+ * headers, so a small body is enough; without a cap a redirect to a CDN file
+ * would pull the whole file into memory.
+ */
+const RAW_MAX_BYTES = 64 * 1024;
+
 function hostOf(url: string): string {
   try { return new URL(url).hostname.toLowerCase(); }
   catch { return ''; }
 }
 
+/** Drops every spelling of the range header, so a request keeps only the range it sets itself. */
+function withoutRange(headers?: Record<string, string>): Record<string, string> {
+  const rest: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers ?? {})) {
+    if (/^range$/i.test(key)) continue;
+    rest[key] = value;
+  }
+  return rest;
+}
+
 /**
- * The session state of one netdisk platform: a cookie jar per host and a
- * request pace per host. Both are kept here so the platform adapters only
- * have to speak the platform protocol.
+ * The session state of one netdisk platform: a cookie jar and an account token
+ * per host and a request pace per host. All of it is kept here so the platform
+ * adapters only have to speak the platform protocol.
  */
 export class NetdiskSession {
   /** Cookies are kept per host: a session of one platform must never reach another. */
   private readonly cookies = new Map<string, Map<string, string>>();
+  /** The account token of a host, kept per host for the same reason as the cookies. */
+  private readonly authorizations = new Map<string, string>();
   /** Reserved start time of the next request of a host, so concurrent calls stay spaced out. */
   private readonly nextRequestAt = new Map<string, number>();
   private readonly minIntervalMs: number;
@@ -53,6 +72,18 @@ export class NetdiskSession {
     const jar = this.cookies.get(hostOf(url));
     if (!jar || !jar.size) return '';
     return [...jar.entries()].map(([name, value]) => `${name}=${value}`).join('; ');
+  }
+
+  /** Writes the account token of the host the url points at. */
+  setAuthorization(url: string, token: string): void {
+    const host = hostOf(url);
+    if (!host) return;
+    this.authorizations.set(host, token);
+  }
+
+  /** The account token of the host the url points at, for a request built by hand. */
+  authorizationHeader(url: string): string {
+    return this.authorizations.get(hostOf(url)) ?? '';
   }
 
   private checkAbort(): void {
@@ -82,24 +113,31 @@ export class NetdiskSession {
   }
 
   /**
-   * Only the cookies of the requested host are attached. A Cookie header of
-   * the caller is dropped: the jar is the only way a cookie enters a request,
-   * so a session can never be carried over to another host by mistake.
+   * Only the credentials of the requested host are attached. A credential
+   * header of the caller is dropped: the session is the only way a cookie or
+   * an account token enters a request, so neither can ever be carried over to
+   * another host by mistake.
    */
-  private mergeCookieHeader(url: string, headers?: Record<string, string>): Record<string, string> | undefined {
+  private mergeCredentialHeaders(url: string, headers?: Record<string, string>): Record<string, string> | undefined {
     const rest: Record<string, string> = {};
     for (const [key, value] of Object.entries(headers ?? {})) {
-      // Every spelling of the header is dropped, so two cookie headers can
+      // Every spelling of the header is dropped, so two credential headers can
       // never reach the server.
-      if (/cookie/i.test(key)) continue;
+      if (/cookie/i.test(key) || /^authorization$/i.test(key)) continue;
       rest[key] = value;
     }
-    const jar = this.cookies.get(hostOf(url));
+    const host = hostOf(url);
+    const jar = this.cookies.get(host);
     const fromJar = jar && jar.size
       ? [...jar.entries()].map(([name, value]) => `${name}=${value}`).join('; ')
       : '';
-    if (!fromJar) return Object.keys(rest).length ? rest : undefined;
-    return { ...rest, Cookie: fromJar };
+    const token = this.authorizations.get(host) ?? '';
+    if (!fromJar && !token) return Object.keys(rest).length ? rest : undefined;
+    return {
+      ...rest,
+      ...(fromJar ? { Cookie: fromJar } : {}),
+      ...(token ? { Authorization: token } : {}),
+    };
   }
 
   private async send<T>(
@@ -111,7 +149,7 @@ export class NetdiskSession {
     await this.waitForSlot(url);
     this.checkAbort();
     try {
-      return await run(this.mergeCookieHeader(url, headers));
+      return await run(this.mergeCredentialHeaders(url, headers));
     } catch (error) {
       if (error instanceof ToolError) throw error;
       throw new ToolError('NETWORK_ERROR', '无法访问网盘接口，请检查地址或稍后重试。');
@@ -138,9 +176,9 @@ export class NetdiskSession {
    * The response of a request that only reads headers. A platform that hands
    * out its session in a Set-Cookie header is read through this.
    */
-  async raw(url: string, headers?: Record<string, string>): Promise<NetdiskRawResponse> {
+  async raw(url: string, headers?: Record<string, string>, maxBytes: number = RAW_MAX_BYTES): Promise<NetdiskRawResponse> {
     return this.send(url, headers, async (merged) => {
-      const response = await this.options.http.getRaw(url, this.options.signal, { headers: merged });
+      const response = await this.options.http.getRaw(url, this.options.signal, { headers: merged, maxBytes });
       return {
         finalUrl: response.finalUrl,
         status: response.status,
@@ -155,7 +193,9 @@ export class NetdiskSession {
     return this.send(url, headers, async (merged) => {
       const response = await this.options.http.getRaw(url, this.options.signal, {
         // The probe asks for one byte, so its own range wins over the caller's.
-        headers: { ...merged, Range: 'bytes=0-0' },
+        // The caller's range is dropped in every spelling, because the header
+        // names are compared in lower case further down.
+        headers: { ...withoutRange(merged), Range: 'bytes=0-0' },
         maxBytes: 1024,
       });
       return {

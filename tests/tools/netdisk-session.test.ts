@@ -9,8 +9,16 @@ interface SeenCall {
   url: string;
   method: string;
   headers?: Record<string, string>;
+  maxBytes?: number;
   at: number;
 }
+
+/**
+ * The timer that paces the requests can fire a few milliseconds early, and a
+ * busy event loop can make it fire even earlier, so the measured gap is only
+ * checked with that tolerance.
+ */
+const PACE_TOLERANCE_MS = 10;
 
 /** The headers as the server sees them, with the names in lower case. */
 function asSent(headers?: Record<string, string>): Record<string, string> {
@@ -18,8 +26,8 @@ function asSent(headers?: Record<string, string>): Record<string, string> {
 }
 
 function fakeHttp(seen: SeenCall[], failure?: Error): PublicHttp {
-  const record = (method: string, url: string, headers?: Record<string, string>) => {
-    seen.push({ method, url, headers, at: performance.now() });
+  const record = (method: string, url: string, headers?: Record<string, string>, maxBytes?: number) => {
+    seen.push({ method, url, headers, maxBytes, at: performance.now() });
     if (failure) throw failure;
   };
   return {
@@ -27,7 +35,7 @@ function fakeHttp(seen: SeenCall[], failure?: Error): PublicHttp {
     getJson: async (url, _signal, options) => { record('GET', url, options?.headers); return { finalUrl: url, data: { ok: true }, status: 200 }; },
     getBinary: async () => ({ finalUrl: '', bytes: new Uint8Array(), contentType: '', status: 200 }),
     getRaw: async (url, _signal, options) => {
-      record('GET', url, options?.headers);
+      record('GET', url, options?.headers, options?.maxBytes);
       return {
         finalUrl: 'https://cdn.test/file.bin',
         status: 206,
@@ -158,6 +166,60 @@ test('hands out the response headers and the set cookie of a request', async () 
   assert.equal(seen[0].headers?.Cookie, 'sid=secret');
 });
 
+test('caps the body of a raw request', async () => {
+  const seen: SeenCall[] = [];
+  const session = new NetdiskSession({ http: fakeHttp(seen), signal: new AbortController().signal });
+  await session.raw('https://115.com/api/1');
+  // A raw request only reads the headers, so a small body is enough.
+  assert.equal(seen[0].maxBytes, 64 * 1024);
+  await session.raw('https://115.com/api/2', undefined, 1024 * 1024);
+  assert.equal(seen[1].maxBytes, 1024 * 1024);
+});
+
+test('keeps its own range under both spellings of the caller', async () => {
+  const seen: SeenCall[] = [];
+  const session = new NetdiskSession({ http: fakeHttp(seen), signal: new AbortController().signal });
+  await session.probe('https://pan.quark.cn/direct', { Range: 'bytes=5-5', range: 'bytes=6-6' });
+  // The header names are compared in lower case, so the probe's range must be
+  // the only one that is left.
+  assert.equal(asSent(seen[0].headers).range, 'bytes=0-0');
+});
+
+test('keeps the authorization of the host and drops the one of the caller', async () => {
+  const seen: SeenCall[] = [];
+  const session = new NetdiskSession({ http: fakeHttp(seen), signal: new AbortController().signal });
+  session.setAuthorization('https://api.139.com.cn/', 'Bearer account-token');
+  await session.postJson('https://api.139.com.cn/api/1', {}, { Authorization: 'Bearer caller-token' });
+  await session.postJson('https://other.test/api/1', {});
+  assert.equal(seen[0].headers?.Authorization, 'Bearer account-token');
+  assert.equal(asSent(seen[0].headers).authorization, 'Bearer account-token');
+  // The token of the host must not reach another one.
+  assert.equal(seen[1].headers?.Authorization, undefined);
+  assert.equal(asSent(seen[1].headers).authorization, undefined);
+});
+
+test('removes every authorization header the caller writes, in any case', async () => {
+  const seen: SeenCall[] = [];
+  const session = new NetdiskSession({ http: fakeHttp(seen), signal: new AbortController().signal });
+  await session.postJson('https://115.com/api/1', {}, { Authorization: 'a=1', authorization: 'b=2', AUTHORIZATION: 'c=3', Referer: 'https://115.com/' });
+  const sent = asSent(seen[0].headers);
+  assert.equal(sent.authorization, undefined);
+  assert.equal(seen[0].headers?.Authorization, undefined);
+  assert.equal(seen[0].headers?.authorization, undefined);
+  assert.equal(seen[0].headers?.AUTHORIZATION, undefined);
+  // The other headers of the caller survive.
+  assert.equal(sent.referer, 'https://115.com/');
+});
+
+test('hands out the authorization of the host only', () => {
+  const session = new NetdiskSession({ http: fakeHttp([]), signal: new AbortController().signal });
+  session.setAuthorization('https://api.139.com.cn/', 'Bearer account-token');
+  assert.equal(session.authorizationHeader('https://api.139.com.cn/'), 'Bearer account-token');
+  assert.equal(session.authorizationHeader('https://other.test/'), '');
+  session.setAuthorization('not a url', 'Bearer token');
+  assert.equal(session.authorizationHeader('not a url'), '');
+});
+
 test('maps a network failure to a network error', async () => {
   const session = new NetdiskSession({ http: fakeHttp([], new Error('socket hang up')), signal: new AbortController().signal });
   await assert.rejects(
@@ -200,7 +262,7 @@ test('paces the requests of one host and leaves the other hosts alone', async ()
   // A request to another host does not wait for the interval of the previous one.
   assert.ok(seen[1].at - seen[0].at < 120, 'another host must not be throttled');
   // The same host is spaced out by the interval.
-  assert.ok(seen[2].at - seen[0].at >= 118, 'the same host must be spaced out');
+  assert.ok(seen[2].at - seen[0].at >= 120 - PACE_TOLERANCE_MS, 'the same host must be spaced out');
 });
 
 test('keeps concurrent requests to one host spaced out', async () => {
@@ -211,8 +273,8 @@ test('keeps concurrent requests to one host spaced out', async () => {
     session.get('https://pan.quark.cn/api/2'),
     session.get('https://pan.quark.cn/api/3'),
   ]);
-  assert.ok(seen[1].at - seen[0].at >= 98, 'the second call must wait');
-  assert.ok(seen[2].at - seen[1].at >= 98, 'the third call must wait as well');
+  assert.ok(seen[1].at - seen[0].at >= 100 - PACE_TOLERANCE_MS, 'the second call must wait');
+  assert.ok(seen[2].at - seen[1].at >= 100 - PACE_TOLERANCE_MS, 'the third call must wait as well');
 });
 
 test('refuses to send after the session signal is aborted', async () => {
