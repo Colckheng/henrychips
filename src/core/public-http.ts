@@ -175,6 +175,12 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
     // The headers of the current request. A redirect to another host drops the
     // credential headers, so the session of the old host stays there.
     let requestHeaders = options?.headers;
+    // The method and the body of the current request. A redirect to another
+    // host turns the request into a plain GET without a body.
+    let method = options?.method ?? 'GET';
+    let requestBody = options?.body;
+    // Every hop of the chain can set a cookie, so they are collected all.
+    const setCookie: string[] = [];
     for (let redirects = 0; ; redirects++) {
       checkAbort(signal);
       const host = hostname(url);
@@ -185,17 +191,22 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
         // undici.request does not follow redirects unless a redirect
         // interceptor is explicitly installed. This agent has none.
         const response = await request(url, {
-          dispatcher: agent, method: options?.method ?? 'GET', signal,
+          dispatcher: agent, method, signal,
           headersTimeout: timeoutMs, bodyTimeout: timeoutMs,
           headers: {
             accept: kind === 'html' ? 'text/html, application/xhtml+xml' : kind === 'json' ? 'application/json' : '*/*',
             'accept-encoding': 'identity',
-            ...(options?.contentType ? { 'content-type': options.contentType } : {}),
             ...safeRequestHeaders(requestHeaders),
+            // The content type of the request wins over the one of the caller,
+            // because it describes the body that is actually sent.
+            ...(options?.contentType ? { 'content-type': options.contentType } : {}),
           },
-          ...(options?.body !== undefined ? { body: options.body } : {}),
+          ...(requestBody !== undefined ? { body: requestBody } : {}),
         });
         const { statusCode, headers, body } = response;
+        const hopCookies = headers['set-cookie'];
+        if (typeof hopCookies === 'string') setCookie.push(hopCookies);
+        else if (Array.isArray(hopCookies)) for (const value of hopCookies) setCookie.push(String(value));
         // Errors from an intentionally discarded redirect/oversized body must
         // not escape as unhandled stream events when the agent is disposed.
         body.on('error', () => {});
@@ -211,7 +222,13 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
             const currentHost = hostname(url);
             url = validatePublicUrl(target.href, options?.allowedPorts ?? []);
             // A redirect to another host must not carry the credentials of the old one.
-            if (hostname(url) !== currentHost) requestHeaders = withoutCredentials(requestHeaders);
+            if (hostname(url) !== currentHost) {
+              requestHeaders = withoutCredentials(requestHeaders);
+              // The body can carry a token as well, so the hop to the new host
+              // is a plain GET without a body.
+              method = 'GET';
+              requestBody = undefined;
+            }
             continue;
           }
           if (statusCode < 200 || statusCode >= 300) throw new ToolError('NETWORK_ERROR', '网页服务器未返回成功响应。');
@@ -247,7 +264,6 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
           }
           checkAbort(signal);
           const buffer = Buffer.concat(chunks, total);
-          const setCookie = typeof headers['set-cookie'] === 'string' ? [headers['set-cookie']] : Array.isArray(headers['set-cookie']) ? headers['set-cookie'].map(String) : [] as string[];
           if (kind === 'html') {
             const charset = /charset\s*=\s*["']?([^\s;"']+)/i.exec(contentType)?.[1] ?? 'utf-8';
             let decoder: TextDecoder;

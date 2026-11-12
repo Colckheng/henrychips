@@ -362,6 +362,84 @@ test('keeps the credentials on a redirect inside the same host', async (t) => {
   assert.equal(seen[1].authorization, 'Bearer token');
 });
 
+test('drops the body and the method on a redirect to another host', async (t) => {
+  const seen: Array<{ host: string; method?: string; body: string }> = [];
+  await transport(t, (req, res) => {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      seen.push({ host: req.headers.host ?? '', method: req.method, body });
+      if (req.headers.host === 'share.test') {
+        res.writeHead(302, { location: 'http://cdn.test/api' });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+  });
+  await createPublicHttp(2_097_152).postJson('http://share.test/api', { token: 'secret' }, signal());
+  assert.equal(seen.length, 2);
+  assert.equal(seen[0].method, 'POST');
+  assert.equal(seen[0].body, JSON.stringify({ token: 'secret' }));
+  // The body can carry a token, so the hop to the new host is a plain GET.
+  assert.equal(seen[1].method, 'GET');
+  assert.equal(seen[1].body, '');
+});
+
+test('keeps the method and the body on a redirect inside the same host', async (t) => {
+  const seen: Array<{ method?: string; body: string }> = [];
+  await transport(t, (req, res) => {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      seen.push({ method: req.method, body });
+      if (req.url === '/start') {
+        res.writeHead(307, { location: '/next' });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+  });
+  await createPublicHttp(2_097_152).postJson('http://share.test/start', { token: 'secret' }, signal());
+  assert.equal(seen.length, 2);
+  assert.equal(seen[1].method, 'POST');
+  assert.equal(seen[1].body, JSON.stringify({ token: 'secret' }));
+});
+
+test('collects the set cookie of every hop of a redirect chain', async (t) => {
+  await transport(t, (req, res) => {
+    if (req.headers.host === 'share.test') {
+      res.writeHead(302, { location: 'http://cdn.test/file.bin', 'set-cookie': 'cdn_sid=abc; Path=/' });
+      res.end();
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/octet-stream', 'set-cookie': 'final=1; Path=/' });
+    res.end('x');
+  });
+  const response = await createPublicHttp(2_097_152).getRaw('http://share.test/', signal());
+  // The cookie of the first hop is the one the caller is after.
+  assert.deepEqual(response.setCookie, ['cdn_sid=abc; Path=/', 'final=1; Path=/']);
+});
+
+test('keeps its own content type over the one of the caller', async (t) => {
+  const seen: { type?: string } = {};
+  await transport(t, (req, res) => {
+    req.on('data', () => {});
+    req.on('end', () => {
+      seen.type = req.headers['content-type'];
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{}');
+    });
+  });
+  await createPublicHttp(2_097_152).postJson('http://public.test/api', { id: '1' }, signal(), {
+    headers: { 'Content-Type': 'text/plain' },
+  });
+  assert.equal(seen.type, 'application/json');
+});
+
 test('filters request headers against the allowlist', () => {
   const allowed = safeRequestHeaders({ Range: 'bytes=0-3', Authorization: 'Bearer token', 'X-Requested-With': 'XMLHttpRequest' });
   assert.deepEqual(allowed, { range: 'bytes=0-3', authorization: 'Bearer token', 'x-requested-with': 'XMLHttpRequest' });
