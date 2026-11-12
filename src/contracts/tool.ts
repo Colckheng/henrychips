@@ -47,7 +47,7 @@ export interface PublicHttpRequest {
   maxBytes?: number;
   /** Extra ports a trusted media CDN may use. Private addresses stay blocked. */
   allowedPorts?: number[];
-  /** 流式读取时「多久没有数据算超时」的容忍毫秒数。默认 10000。 */
+  /** 同时设定响应头超时与响应体超时，二者含义不同：前者是首字节的等待上限，后者是两段数据之间的间隔上限。默认 10000。 */
   timeoutMs?: number;
 }
 export interface PublicHttpResponse {
@@ -70,7 +70,7 @@ export interface PublicHttp {
   getRaw(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<PublicHttpResponse>;
   postForm(url: string, fields: Record<string, string>, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; data: unknown; status: number }>;
   postJson(url: string, body: unknown, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; data: unknown; status: number }>;
-  getStream(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; status: number; contentType: string; contentLength: number | null; body: PublicHttpBody }>;
+  getStream(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; status: number; contentType: string; contentLength: number | null; body: PublicHttpBody; headers: Record<string, string> }>;
 }
 export interface FileWriter {
   write(relativePath: string, bytes: Uint8Array, options?: { overwrite?: boolean }): Promise<{ relativePath: string; bytes: number }>;

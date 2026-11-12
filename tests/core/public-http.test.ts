@@ -5,7 +5,7 @@ import net, { type LookupFunction, type TcpNetConnectOpts } from 'node:net';
 import { createServer, type RequestListener } from 'node:http';
 import { once } from 'node:events';
 import { channel } from 'node:diagnostics_channel';
-import { createPublicHttp, isPublicAddress, validatePublicUrl } from '../../src/core/public-http.js';
+import { createPublicHttp, isPublicAddress, safeRequestHeaders, validatePublicUrl } from '../../src/core/public-http.js';
 
 const signal = () => new AbortController().signal;
 
@@ -217,7 +217,9 @@ test('keeps the range header that a segmented download needs', async t => {
   });
   const http = createPublicHttp(2_097_152);
   const result = await http.getStream('http://public.test/file.bin', new AbortController().signal, { headers: { Range: 'bytes=0-3' } });
-  result.body.resume();
+  const chunks: Buffer[] = [];
+  for await (const chunk of result.body) chunks.push(Buffer.from(chunk));
+  assert.equal(Buffer.concat(chunks).toString(), 'abcd');
   assert.equal(seen[0], 'bytes=0-3');
 });
 
@@ -232,4 +234,100 @@ test('streams a response body instead of buffering it', async t => {
   const chunks: Buffer[] = [];
   for await (const chunk of result.body) chunks.push(Buffer.from(chunk));
   assert.equal(Buffer.concat(chunks).toString(), 'abcdef');
+});
+
+test('exposes the response headers a segmented download needs', async t => {
+  await transport(t, (_request, response) => {
+    response.writeHead(206, { 'Content-Type': 'application/octet-stream', 'Content-Range': 'bytes 0-3/100' });
+    response.end('abcd');
+  });
+  const http = createPublicHttp(2_097_152);
+  const result = await http.getStream('http://public.test/file.bin', new AbortController().signal, { headers: { Range: 'bytes=0-3' } });
+  assert.equal(result.status, 206);
+  assert.equal(result.headers['content-range'], 'bytes 0-3/100');
+  for await (const _chunk of result.body) { /* drain */ }
+});
+
+test('enforces the size limit on a streamed body without a declared length', async t => {
+  const state = await transport(t, (_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+    response.write('abcdef');
+    response.end('ghijkl');
+  });
+  const http = createPublicHttp(8);
+  const result = await http.getStream('http://public.test/file.bin', new AbortController().signal, { maxBytes: 8 });
+  assert.equal(result.contentLength, null);
+  const received: Buffer[] = [];
+  await assert.rejects(async () => {
+    for await (const chunk of result.body) received.push(Buffer.from(chunk));
+  }, { code: 'LIMIT_EXCEEDED' });
+  assert.ok(Buffer.concat(received).byteLength <= 8);
+  // The violation must also release the socket instead of leaving it dangling.
+  await Promise.all(state.closed);
+  assert.ok(state.sockets.every(socket => socket.destroyed));
+});
+
+test('keeps a streamed body within the limit readable', async t => {
+  await transport(t, (_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+    response.end('abcdef');
+  });
+  const http = createPublicHttp(2_097_152);
+  const result = await http.getStream('http://public.test/file.bin', new AbortController().signal, { maxBytes: 8 });
+  const chunks: Buffer[] = [];
+  for await (const chunk of result.body) chunks.push(Buffer.from(chunk));
+  assert.equal(Buffer.concat(chunks).toString(), 'abcdef');
+});
+
+test('keeps resume and destroy usable on a counted stream', async t => {
+  const state = await transport(t, (_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+    response.write('abcdef');
+    response.end('ghijkl');
+  });
+  const http = createPublicHttp(8);
+  // A resumed stream has no consumer awaiting the error, so the limit
+  // violation must not escape as an uncaught exception.
+  const resumed = await http.getStream('http://public.test/file.bin', new AbortController().signal, { maxBytes: 8 });
+  resumed.body.resume();
+  const destroyed = await http.getStream('http://public.test/file.bin', new AbortController().signal, { maxBytes: 8 });
+  destroyed.body.destroy(new Error('caller gave up'));
+  await Promise.all(state.closed);
+  assert.ok(state.sockets.every(socket => socket.destroyed));
+});
+
+test('posts json bodies with a json content type', async t => {
+  const seen: { body?: string; type?: string; method?: string } = {};
+  await transport(t, (request, response) => {
+    let body = '';
+    request.on('data', chunk => { body += chunk; });
+    request.on('end', () => {
+      seen.body = body;
+      seen.type = request.headers['content-type'];
+      seen.method = request.method;
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ ok: true }));
+    });
+  });
+  const http = createPublicHttp(2_097_152);
+  const result = await http.postJson('http://public.test/api', { id: '42', tags: ['a'] }, new AbortController().signal);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.data, { ok: true });
+  assert.equal(seen.method, 'POST');
+  assert.equal(seen.type, 'application/json');
+  assert.equal(seen.body, JSON.stringify({ id: '42', tags: ['a'] }));
+});
+
+test('filters request headers against the allowlist', () => {
+  const allowed = safeRequestHeaders({ Range: 'bytes=0-3', Authorization: 'Bearer token', 'X-Requested-With': 'XMLHttpRequest' });
+  assert.deepEqual(allowed, { range: 'bytes=0-3', authorization: 'Bearer token', 'x-requested-with': 'XMLHttpRequest' });
+  const forbidden = safeRequestHeaders({
+    Host: 'evil.test',
+    'Content-Length': '10',
+    Connection: 'keep-alive',
+    'Transfer-Encoding': 'chunked',
+  });
+  assert.deepEqual(forbidden, {});
+  assert.deepEqual(safeRequestHeaders({ Range: 'bytes=0-3\r\nX-Injected: 1' }), {});
+  assert.deepEqual(safeRequestHeaders({ Range: 'bytes=0-3\nX-Injected: 1' }), {});
 });

@@ -1,5 +1,6 @@
 import dns, { type LookupAddress } from 'node:dns';
 import { isIP, type LookupFunction } from 'node:net';
+import { type Readable, Transform } from 'node:stream';
 import ipaddr from 'ipaddr.js';
 import { Agent, request } from 'undici';
 import type { PublicHttp, PublicHttpBody, PublicHttpRequest } from '../contracts/tool.js';
@@ -101,6 +102,33 @@ export function safeRequestHeaders(headers?: Record<string, string>): Record<str
   return result;
 }
 
+/**
+ * Counts bytes on the pass-through path so the size limit holds for streamed
+ * responses too. The body is never buffered; the limit violation surfaces as a
+ * stream error the caller sees while consuming.
+ */
+function limitedBody(source: Readable, limit: number): Readable {
+  let total = 0;
+  const counter = new Transform({
+    transform(chunk: Buffer | string, _encoding, callback) {
+      total += Buffer.byteLength(chunk);
+      if (total > limit) {
+        callback(new ToolError('LIMIT_EXCEEDED', '网页超过读取大小限制。'));
+        return;
+      }
+      callback(null, chunk);
+    },
+  });
+  // A resumed or already destroyed stream has no consumer awaiting the error,
+  // so it must not escape as an unhandled exception.
+  counter.on('error', () => {});
+  // Abandoning the wrapper must also release the socket behind the response.
+  counter.on('close', () => { source.destroy(); });
+  source.on('error', error => { counter.destroy(error); });
+  source.pipe(counter);
+  return counter;
+}
+
 export function createPublicHttp(maxBytes: number): PublicHttp {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new RangeError('maxBytes must be a positive safe integer');
   type Kind = 'html' | 'json' | 'binary' | 'stream';
@@ -186,7 +214,7 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
             // the stream ends. Destroying it here would cut the download off.
             body.once('close', () => { void agent.destroy(); });
             handedOff = true;
-            return { finalUrl: url.href, status: statusCode, contentType, contentLength, body, headers: responseHeaders };
+            return { finalUrl: url.href, status: statusCode, contentType, contentLength, body: limitedBody(body, limit), headers: responseHeaders };
           }
           const chunks: Buffer[] = [];
           let total = 0;
