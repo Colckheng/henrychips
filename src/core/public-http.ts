@@ -1,6 +1,7 @@
 import dns, { type LookupAddress } from 'node:dns';
 import { isIP, type LookupFunction } from 'node:net';
 import { type Readable, Transform } from 'node:stream';
+import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib';
 import ipaddr from 'ipaddr.js';
 import { Agent, request } from 'undici';
 import type { PublicHttp, PublicHttpBody, PublicHttpRequest } from '../contracts/tool.js';
@@ -157,6 +158,26 @@ function limitedBody(source: Readable, limit: number): Readable {
   return counter;
 }
 
+/**
+ * The decoder of one content encoding. The server of some platforms ignores
+ * the identity encoding the client asks for, so the caller has to accept the
+ * compressed answer and decode it here.
+ */
+function decoderOf(encoding: string): Transform | null {
+  const name = encoding.trim().toLowerCase();
+  if (name === 'gzip' || name === 'x-gzip') return createGunzip();
+  if (name === 'deflate') return createInflate();
+  if (name === 'br') return createBrotliDecompress();
+  return null;
+}
+
+/**
+ * The ceiling of an error answer that a caller reads for its status. The
+ * status is what such a caller wants, so the body must not be refused for
+ * being larger than the limit of the caller; it is bounded all the same.
+ */
+const ERROR_BODY_MAX_BYTES = 64 * 1024;
+
 export function createPublicHttp(maxBytes: number): PublicHttp {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new RangeError('maxBytes must be a positive safe integer');
   type Kind = 'html' | 'json' | 'binary' | 'stream' | 'head';
@@ -219,8 +240,10 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
           dispatcher: agent, method, signal,
           headersTimeout: timeoutMs, bodyTimeout: timeoutMs,
           headers: {
-            accept: kind === 'html' ? 'text/html, application/xhtml+xml' : kind === 'json' ? 'application/json' : '*/*',
-            'accept-encoding': 'identity',
+            accept: kind === 'html' ? 'text/html, application/xhtml+xml' : kind === 'json' ? 'application/json, text/json' : '*/*',
+            // A caller that accepts a compressed answer asks for one, so a
+            // server that honours the header can compress the body as well.
+            'accept-encoding': options?.acceptCompressed ? 'gzip, deflate, br' : 'identity',
             ...safeRequestHeaders(requestHeaders),
             // The content type of the request wins over the one of the caller,
             // because it describes the body that is actually sent.
@@ -261,18 +284,41 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
             // probe of a direct link for instance, asks for it explicitly.
             if (!options?.allowErrorStatus) throw new ToolError('NETWORK_ERROR', '网页服务器未返回成功响应。');
           }
+          // An error answer is read for its status, not for its body, so the
+          // size limit of the caller does not apply to it. The body is still
+          // bounded, so a huge error page cannot exhaust the memory.
+          const errorAnswer = statusCode < 200 || statusCode >= 300;
+          const errorBodyLimit = ERROR_BODY_MAX_BYTES;
+          const bodyLimit = errorAnswer ? errorBodyLimit : limit;
           const contentType = typeof headers['content-type'] === 'string' ? headers['content-type'] : '';
           const mime = contentType.split(';')[0].trim().toLowerCase();
           if (kind === 'html' && !['text/html', 'application/xhtml+xml'].includes(mime)) {
             throw new ToolError('UNSUPPORTED_FORMAT', '该地址未返回 HTML 网页。');
           }
-          if (kind === 'json' && mime !== 'application/json' && !mime.endsWith('+json')) {
+          if (kind === 'json' && mime !== 'application/json' && mime !== 'text/json' && !mime.endsWith('+json')) {
             throw new ToolError('UNSUPPORTED_FORMAT', '该地址未返回 JSON 数据。');
           }
           const encoding = headers['content-encoding'];
-          if (encoding && encoding !== 'identity') throw new ToolError('UNSUPPORTED_FORMAT', '网页未按请求返回未压缩的内容。');
+          // A server that ignores the identity encoding the client asks for
+          // still answers with a compressed body. Only a caller that opted in
+          // gets it decoded; everybody else keeps the strict rule.
+          let decoder: Transform | null = null;
+          if (encoding && encoding !== 'identity') {
+            if (!options?.acceptCompressed) throw new ToolError('UNSUPPORTED_FORMAT', '网页未按请求返回未压缩的内容。');
+            decoder = decoderOf(Array.isArray(encoding) ? encoding[0] : encoding);
+            if (!decoder) throw new ToolError('UNSUPPORTED_FORMAT', '网页使用了不支持的压缩编码。');
+            // A decoder that fails must not escape as an unhandled stream
+            // event, so it is watched like the body itself.
+            decoder.on('error', () => {});
+          }
+          const decoded = decoder !== null;
           const declared = headers['content-length'];
-          if (kind !== 'head' && declared !== undefined && Number(declared) > limit) throw new ToolError('LIMIT_EXCEEDED', '网页超过读取大小限制。');
+          // The declared length belongs to the compressed body, so it cannot
+          // decide the limit of the decoded one. An error answer is read for
+          // its status, so its declared length is not refused either.
+          if (kind !== 'head' && !decoded && !errorAnswer && declared !== undefined && Number(declared) > bodyLimit) {
+            throw new ToolError('LIMIT_EXCEEDED', '网页超过读取大小限制。');
+          }
           const responseHeaders = Object.fromEntries(Object.entries(headers).map(([key, value]) => [key, Array.isArray(value) ? value.join(', ') : String(value)]));
           if (kind === 'head') {
             // The body is left unread, so a large one cannot make the head
@@ -285,15 +331,19 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
             // the stream ends. Destroying it here would cut the download off.
             body.once('close', () => { void agent.destroy(); });
             handedOff = true;
-            return { finalUrl: url.href, status: statusCode, contentType, contentLength, body: limitedBody(body, limit), headers: responseHeaders };
+            const source = decoder ? body.pipe(decoder) : body;
+            return { finalUrl: url.href, status: statusCode, contentType, contentLength, body: limitedBody(source, bodyLimit), headers: responseHeaders };
           }
           const chunks: Buffer[] = [];
           let total = 0;
-          for await (const chunk of body) {
+          const source = decoder ? body.pipe(decoder) : body;
+          for await (const chunk of source) {
             checkAbort(signal);
             const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
             total += bytes.byteLength;
-            if (total > limit) throw new ToolError('LIMIT_EXCEEDED', '网页超过读取大小限制。');
+            // The decoded bytes are the ones the caller receives, so they are
+            // the ones the limit is about.
+            if (total > bodyLimit) throw new ToolError('LIMIT_EXCEEDED', '网页超过读取大小限制。');
             chunks.push(bytes);
           }
           checkAbort(signal);

@@ -51,6 +51,13 @@ export interface PublicHttpRequest {
   timeoutMs?: number;
   /** Lets the caller read the status of an error answer instead of a failure. */
   allowErrorStatus?: boolean;
+  /**
+   * Accepts a compressed answer and decodes it. The server of some platforms
+   * ignores the identity encoding the client asks for, so the caller has to
+   * opt in explicitly. The decoded byte count is the one that counts against
+   * the size limit.
+   */
+  acceptCompressed?: boolean;
 }
 export interface PublicHttpResponse {
   finalUrl: string;

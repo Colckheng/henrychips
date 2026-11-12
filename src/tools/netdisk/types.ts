@@ -22,6 +22,12 @@ export interface NetdiskFile {
   sizeBytes: number | null;
   isDirectory: boolean;
   modifiedAt?: string;
+  /**
+   * The signed address of the member, when the platform hands one out. The
+   * address is what the download is started from, so it is kept apart from
+   * the identity of the member.
+   */
+  fidToken?: string;
 }
 
 /** Everything needed to rebuild the link of a file when the link expired. */

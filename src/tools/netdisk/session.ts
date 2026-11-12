@@ -36,6 +36,28 @@ export interface NetdiskHeadResponse {
  */
 const RAW_MAX_BYTES = 64 * 1024;
 
+/**
+ * The ceiling of a probe. A probe reads the head of a link, but a platform can
+ * answer with a page that explains itself, and such a page is bigger than the
+ * byte the probe asked for.
+ */
+const PROBE_MAX_BYTES = 64 * 1024;
+
+/**
+ * The answer of a probe of a direct link: the status and the headers of the
+ * answer, plus its body, which tells a file apart from a page that explains
+ * itself.
+ */
+export interface NetdiskProbeResponse {
+  finalUrl: string;
+  status: number;
+  location?: string;
+  contentRange?: string;
+  acceptRanges?: string;
+  contentType?: string;
+  body: Uint8Array;
+}
+
 function hostOf(url: string): string {
   try { return new URL(url).hostname.toLowerCase(); }
   catch { return ''; }
@@ -217,18 +239,28 @@ export class NetdiskSession {
     });
   }
 
-  /** Reads the headers of a one byte range request, to learn whether the direct link supports resuming. */
-  async probe(url: string, headers?: Record<string, string>): Promise<{ finalUrl: string; status: number; location?: string; contentRange?: string; acceptRanges?: string; contentType?: string }> {
+  /**
+   * Reads the headers of a one byte range request, to learn whether the direct link supports resuming.
+   *
+   * The body of the answer is read as well, because a platform can answer with
+   * a page that explains itself instead of with the file. The limit of the
+   * probe is its own, so a big error page does not fail the probe as a size
+   * violation.
+   */
+  async probe(url: string, headers?: Record<string, string>, options?: { acceptCompressed?: boolean }): Promise<NetdiskProbeResponse> {
     return this.send(url, headers, async (merged) => {
       const response = await this.options.http.getRaw(url, this.options.signal, {
         // The probe asks for one byte, so its own range wins over the caller's.
         // The caller's range is dropped in every spelling, because the header
         // names are compared in lower case further down.
         headers: { ...withoutRange(merged), Range: 'bytes=0-0' },
-        maxBytes: 1024,
+        maxBytes: PROBE_MAX_BYTES,
         // The status of an error answer is the answer of a probe, so it is
         // read instead of turned into a failure.
         allowErrorStatus: true,
+        // A server that ignores the identity encoding still answers with a
+        // compressed body, and a page that explains itself is compressed.
+        acceptCompressed: options?.acceptCompressed ?? false,
       });
       return {
         finalUrl: response.finalUrl,
@@ -239,6 +271,9 @@ export class NetdiskSession {
         // The type tells a file apart from an interstitial page, which is the
         // difference between a usable link and a verification step.
         contentType: response.contentType,
+        // The body tells an interstitial page apart from a file, so the probe
+        // keeps it.
+        body: response.bytes,
       };
     });
   }
