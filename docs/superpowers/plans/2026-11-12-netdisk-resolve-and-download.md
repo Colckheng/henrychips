@@ -710,7 +710,7 @@ const pan115Password = /[?&]password=([A-Za-z0-9]+)/i;
 
 export function parseShareLink(text: string): ParsedShare | null {
   const trimmed = text.trim();
-  const raw = urlRegex.exec(trimmed)?.[0]?.replace(/[。，,；;)\]}】"']+$/u, '');
+  const raw = urlRegex.exec(trimmed)?.[0]?.replace(/[^\x21-\x7e]+$/, '');
   if (!raw) return null;
   let url: URL;
   try { url = new URL(raw); }
@@ -1296,6 +1296,7 @@ import { lanzouAdapter } from '../../src/tools/netdisk/adapters/lanzou.js';
 
 test('reads the passcode requirement and the file id out of a share page', () => {
   const html = `<html><head><title>蓝奏分享</title></head><body>
+    <script>var filemoreajax = 1;</script>
     <script>var ajaxm = "ajaxm.php?file=12345";</script>
     <script>var lx = "1"; var fid = "abc"; var t = "t1"; var k = "k1";</script>
     </body></html>`;
@@ -1728,12 +1729,12 @@ export const netdiskResolveTool = defineTool({
     warnings: z.array(z.string()),
   }),
   async execute({ url, code, platform, mode, paths, maxLinks }, ctx) {
-    if (!ctx.http) throw new ToolError('ACCESS_DENIED', '当前环境未启用网络访问。');
     const parsed = parseShareLink(url);
     if (!parsed) throw new ToolError('INVALID_INPUT', '无法识别该链接的网盘平台，请确认是完整的分享链接或分享文案。');
     if (parsed.platform === 'ilanzou') {
       throw new ToolError('UNSUPPORTED_FORMAT', '蓝奏云优享版（ilanzou）官方没有分享解析接口，暂不支持。');
     }
+    if (!ctx.http) throw new ToolError('ACCESS_DENIED', '当前环境未启用网络访问。');
     if (platform !== 'auto' && platform !== parsed.platform) {
       throw new ToolError('INVALID_INPUT', `链接识别为${NETDISK_PLATFORM_LABELS[parsed.platform]}，与指定的平台不一致。`);
     }
@@ -1935,7 +1936,7 @@ test('downloads a file in parallel segments into the right offsets', async t => 
     path: 'a.bin', name: 'a.bin', sizeBytes: payload.length,
     url: 'https://example.com/a.bin', headers: {}, rangeSupported: true,
     source: { platform: 'lanzou', shareUrl: 'https://example.com/s/1', code: null, filePath: 'a.bin', fileId: '1' },
-  }, { http, writer, signal: new AbortController().signal });
+  }, { http, writer, signal: new AbortController().signal, outputPath: 'a.bin' });
   assert.equal(result.bytesWritten, payload.length);
   assert.equal((await readFile(path.join(directory, 'a.bin'))).toString(), '0123456789');
 });
@@ -2246,8 +2247,11 @@ test('creates a task and finishes it in the background', async t => {
     },
   });
   assert.equal(task.status, 'queued');
+  let stop: (() => void) | undefined;
   const done = await new Promise<boolean>(resolve => {
-    const stop = manager.subscribe(tasks => { if (tasks.find(item => item.id === task.id)?.status === 'completed') { stop(); resolve(true); } });
+    stop = manager.subscribe(tasks => {
+      if (tasks.find(item => item.id === task.id)?.status === 'completed') { stop?.(); resolve(true); }
+    });
   });
   assert.equal(done, true);
   assert.equal(manager.get(task.id)?.status, 'completed');
@@ -3207,7 +3211,7 @@ test('builds the extension protocol message', () => {
   assert.ok(message.includes('2: https://cdn.example.com/a.bin\r\n'));
   assert.ok(message.includes('4: a.bin\r\n'));
   assert.ok(message.includes('Referer: https://pan.quark.cn/\r\n'));
-  assert.ok(message.includes('User-Agent: UA/1.0\r\n'));
+  assert.ok(message.includes('9: UA/1.0\r\n'));
   assert.ok(message.includes('Cookie: k=v\r\n'));
 });
 
