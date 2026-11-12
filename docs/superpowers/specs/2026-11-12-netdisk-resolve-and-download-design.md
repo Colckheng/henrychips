@@ -17,6 +17,7 @@
 | 交付物 | 说明 |
 | --- | --- |
 | 网盘分享解析工具 | 粘贴分享文案 → 识别平台 → 列出文件 → 产出已验证的下载直链（含必需请求头） |
+| 网盘凭证管理 | CLI 子命令管理网盘凭证（`credentials set` / `list` / `clear`），凭证存放在 git 忽略的状态目录内 |
 | 内置下载任务子系统 | 创建下载任务 → 后台分片下载 → 断点续传 → 进度可见 → 落盘到输出目录 |
 | NDM 可选后端 | 把直链推给本机 Neat Download Manager 接管下载；未安装 NDM 时该后端不可用，不影响默认后端 |
 
@@ -50,6 +51,7 @@
 | 输出写入要求整个 buffer 在内存 | `src/core/file-access.ts:127`，`createFileWriter` | 大文件必须新增流式写入通道 |
 | 下载与输出上限各 200 MB | `workstation.config.json`，`downloadBytes` / `outputBytes` | 现有 B 站 / 抖音工具的天花板 |
 | 能力枚举 | `src/contracts/tool.ts:52` | 新增 NDM 后端需要新增一项 |
+| `workstation.config.json` 被 git 跟踪 | `git ls-files` | 凭证不能放配置里，会随提交进入仓库历史 |
 | 运行上下文按能力注入 | `src/core/executor.ts:135-138` | 新能力沿用同一注入模式 |
 | 进度只覆盖单次运行、5 分钟过期 | `src/core/progress.ts` | 下载任务是长时状态，需要独立的状态通道 |
 
@@ -191,23 +193,38 @@ export interface AdapterContext {
 
 三家的直链必须登录态：迅雷（取直链需 accessToken）、百度（需 BDUSS，且必须先转存）、123（需 Bearer JWT + 签名）。
 
-**配置**（`workstation.config.json` 新增可选段）：
+**存放位置**：`<stateDirectory>/netdisk-credentials.json`，即 `.workstation/netdisk-credentials.json`。
+
+不放在 `workstation.config.json` 里，因为**该配置文件是被 git 跟踪的**（`git ls-files` 可见），凭证写进去会在下一次提交时进入仓库历史。`.workstation/` 已在 `.gitignore` 中，不会外泄。
+
+**结构**：
 
 ```json
 {
-  "netdisk": {
-    "baidu":  { "bduss": "..." },
-    "pan123": { "username": "...", "password": "..." },
-    "xunlei": { "username": "...", "password": "..." }
-  }
+  "baidu":  { "bduss": "..." },
+  "pan123": { "username": "...", "password": "..." },
+  "xunlei": { "username": "...", "password": "..." }
 }
 ```
 
-**优先级**：环境变量 `HENRY_NETDISK_BAIDU_BDUSS` / `HENRY_NETDISK_PAN123_USERNAME` / `HENRY_NETDISK_PAN123_PASSWORD` / `HENRY_NETDISK_XUNLEI_USERNAME` / `HENRY_NETDISK_XUNLEI_PASSWORD` 优先于配置文件，便于不落盘的场景。
+**写入方式**：提供 CLI 子命令，不让用户手改 JSON（手改容易写错字段名，且难以保证权限）。
 
-**账号密码不落盘到运行产物**：123 与迅雷的账号密码在运行时换取 token（JWT / accessToken），换完即丢，只把 token 与过期时间保留在内存供本次调用使用。密码只存在于配置文件里。
+```
+npm run cli -- credentials list
+npm run cli -- credentials set baidu --bduss "..."
+npm run cli -- credentials set pan123 --username "..." --password "..."
+npm run cli -- credentials clear xunlei
+```
 
-**百度的 BDUSS** 是会话串，无法换取，只能明文存配置文件。本轮**不做口令加密**（YunX 那种用户口令派生密钥的方案需要一个口令输入界面，超出本轮范围）；文档中明确提示配置文件的安全责任，并标注为后续可选项。
+写入时文件权限设为 `0600`（Windows 上通过 `chmod` 尽力而为；NTFS 权限由用户自行用文件属性或 BitLocker 兜底）。文件内容不进运行摘要、不进日志。
+
+**优先级**：环境变量 `HENRY_NETDISK_BAIDU_BDUSS` / `HENRY_NETDISK_PAN123_USERNAME` / `HENRY_NETDISK_PAN123_PASSWORD` / `HENRY_NETDISK_XUNLEI_USERNAME` / `HENRY_NETDISK_XUNLEI_PASSWORD` 优先于文件，便于不落盘的场景。
+
+**账号密码不落盘到运行产物**：123 与迅雷的账号密码在运行时换取 token（JWT / accessToken），换完即丢，只把 token 与过期时间保留在内存供本次调用使用。
+
+**百度的 BDUSS** 是会话串，无法换取，只能存文件。
+
+**不做口令加密**。理由：这是单人单机工作站，凭证文件已在 git 忽略目录内并限制为 0600；YunX 那种"用户口令派生密钥"的方案面向的是移动端多用户场景，在这里需要一个额外的口令输入界面与口令管理流程，成本高于收益，且口令本身仍需在某处保存。文档中明确提示该文件的敏感性，并建议在共享机器上用 NTFS 权限或 BitLocker 兜底。
 
 **账号级凭证不进工具输出**。`NetdiskLink.headers` 里放的是**下载时必需的请求头**（`Referer` / `User-Agent` / `Origin` / 该 CDN 自己的短期签名 Cookie），这些是直链能用的前提，必须交付给用户。适配器在产出 `NetdiskLink` 时必须剥离账号级凭证（百度的 BDUSS、123 的 Bearer JWT、迅雷的 accessToken）——它们只用于换取直链，不能随输出泄漏。工具输出只报告 `credentialUsed: boolean`。
 
@@ -530,7 +547,7 @@ curl -L -H "Referer: https://..." -H "Cookie: ..." -H "User-Agent: ..." -o "文�
 | 分享链接无法识别 | `INVALID_INPUT`，明确提示"无法识别该链接的网盘平台" |
 | 平台接口已变更 | `TOOL_FAILED`，提示"XX 网盘接口已变更，解析失败"，不返回猜测数据 |
 | 需要提取码但未提供 | `INVALID_INPUT`，提示"该分享需要提取码" |
-| 需要登录但未配置凭证 | `ACCESS_DENIED`，提示"该平台需要登录态，请在配置文件的 netdisk 段提供 XX" |
+| 需要登录但未配置凭证 | `ACCESS_DENIED`，提示"该平台需要登录态，请先执行 `npm run cli -- credentials set <平台>` 配置凭证" |
 | 直链探测失败 | 该条进 `linkFailures`，整体仍返回其他直链 |
 | 不支持 Range 的平台直链过期 | 任务 `failed`，错误说明"该平台直链不支持断点续传，需重新开始" |
 | NDM 未运行 | `ACCESS_DENIED`，提示先启动 NDM |
@@ -543,7 +560,8 @@ curl -L -H "Referer: https://..." -H "Cookie: ..." -H "User-Agent: ..." -o "文�
 
 - 分享文案解析：各平台正则、提取码四个来源、蓝奏云域名族（含 `lanzn`）、优享版优先判定
 - 直链与路径规范化
-- 凭证优先级（环境变量 > 配置）
+- 凭证优先级（环境变量 > 凭证文件）
+- 凭证文件读写：`credentials set` / `list` / `clear` 的行为与文件权限
 - Cookie 按 host 隔离（夸克的 Cookie 不会发给 115）
 - 分页退避与翻页三级回落判定
 - Range 探测的三种结果分支
@@ -562,7 +580,7 @@ curl -L -H "Referer: https://..." -H "Cookie: ..." -H "User-Agent: ..." -o "文�
 | --- | --- | --- |
 | 0 | 分片可行性验证：用本地 HTTP 服务器验证 `Range` 请求、`206` 响应、预分配文件按偏移写入、杀进程后从断点恢复 | 下完并校验出一个字节完全一致的文件 |
 | 1 | 网络层扩展 + 流式写入器：`PublicHttp` 加 POST / 流式 GET / 白名单扩容 / 超时可配；`FileWriter.open` + `writeAt` + 预分配 | 单测覆盖 SSRF 防护在 POST 路径同样生效；路径安全与越界写入有覆盖 |
-| 2 | 分享识别 + 适配器骨架（含 Range 探测钩子）+ 蓝奏云 | 蓝奏云真实链接跑通 `netdisk_resolve`，并产出它的 Range 支持结论 |
+| 2 | 分享识别 + 适配器骨架（含 Range 探测钩子）+ 凭证 CLI（`credentials set/list/clear`）+ 蓝奏云 | 蓝奏云真实链接跑通 `netdisk_resolve`，并产出它的 Range 支持结论；凭证 CLI 能写入并列出凭证 |
 | 3 | 剩余 8 家适配器（按 5.7 顺序） | 每家一条真实链接跑通；不通的标注状态；汇总各家 Range 结论 |
 | 4 | 下载内核：分片 + 续传 + 直链过期重取链（按阶段 2–3 的 Range 结论决定分片或降级） | 2GB 文件下载中途杀进程，重启后从断点继续；直链过期能自动重取 |
 | 5 | 任务管理 + HTTP API + SSE | 任务列表、暂停、继续、删除可用 |
@@ -575,7 +593,8 @@ curl -L -H "Referer: https://..." -H "Cookie: ..." -H "User-Agent: ..." -o "文�
 - 新建本文档（`docs/superpowers/specs/2026-11-12-netdisk-resolve-and-download-design.md`）。
 - 更新 `docs/superpowers/plans/2026-11-02-personal-workstation-plan.md`：
   - §8 新增 **8.9 网盘分享解析 `netdisk_resolve`** 与 **8.10 网盘下载 `netdisk_download`**
-  - §7.3 修订"不使用登录态、不携带浏览器 Cookie"的适用范围：区分网页抓取工具（不带登录态）与网盘解析工具（使用用户在配置中显式提供的网盘凭证）
+  - §7.3 修订"不使用登录态、不携带浏览器 Cookie"的适用范围：区分网页抓取工具（不带登录态）与网盘解析工具（使用用户在状态目录内显式提供的网盘凭证）
+  - §9.2 补充 CLI 的 `credentials` 子命令
   - 工具清单 12 → 14
   - §13 追加任务 13：网盘分享解析与下载
   - §15 测试矩阵补充网盘用例
