@@ -5,9 +5,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { readRelayClientConfig, writeRelayClientConfig, relayHeaders } from '../../src/relay/client-config.js';
 
-test('the relay section round-trips through the workstation configuration', async () => {
+test('the relay section round-trips through the workstation configuration', async t => {
   const directory = await mkdtemp(path.join(tmpdir(), 'workstation-relay-config-'));
-  t_after(() => rm(directory, { recursive: true, force: true }));
+  t.after(() => rm(directory, { recursive: true, force: true }));
   const configPath = path.join(directory, 'workstation.config.json');
   await writeFile(configPath, JSON.stringify({ workspaceRoot: './sandbox', http: { port: 4318 } }));
   await writeRelayClientConfig(configPath, {
@@ -25,7 +25,3 @@ test('the relay section round-trips through the workstation configuration', asyn
   assert.equal(headers['x-device-id'], 'device-1');
   assert.equal(headers.Authorization, 'Bearer shared-secret');
 });
-
-function t_after(fn: () => unknown): void {
-  void fn();
-}
