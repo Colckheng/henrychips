@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createFileWriter } from '../../src/core/file-access.js';
@@ -22,6 +22,33 @@ test('refuses to open a path outside the output directory', async t => {
   const writer = createFileWriter(directory, new AbortController().signal, 1_048_576);
   await assert.rejects(() => writer.open('../escape.bin'), /输出路径/);
   await assert.rejects(() => writer.open('/absolute.bin'), /输出路径/);
+});
+
+test('refuses to open a Windows device or reserved name', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'workstation-stream-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const writer = createFileWriter(directory, new AbortController().signal, 1_048_576);
+  for (const name of ['NUL', 'nul', 'com1.txt', 'LPT9.log', 'aux.bin']) {
+    await assert.rejects(() => writer.open(name), { code: 'ACCESS_DENIED' });
+  }
+});
+
+test('refuses to open a symbolic link target', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'workstation-stream-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const outside = path.join(directory, 'outside');
+  await mkdir(outside);
+  // A file symlink needs a privilege this machine does not have, so the guard
+  // is exercised through a junction, which lstat reports the same way.
+  try { await symlink(outside, path.join(directory, 'link.bin'), 'junction'); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EPERM') { t.skip('symlink permission unavailable'); return; }
+    throw error;
+  }
+  const writer = createFileWriter(directory, new AbortController().signal, 1_048_576);
+  // overwrite keeps the "already exists" refusal out of the way, so the
+  // rejection can only come from the symbolic link guard.
+  await assert.rejects(() => writer.open('link.bin', { overwrite: true }), { code: 'ACCESS_DENIED', message: /符号链接/ });
 });
 
 test('refuses to open an existing file unless overwrite is set', async t => {
@@ -52,6 +79,36 @@ test('preallocates the file to the requested size', async t => {
   const handle = await writer.open('preallocated.bin', { truncateTo: 4096 });
   await handle.close();
   assert.equal((await stat(path.join(directory, 'preallocated.bin'))).size, 4096);
+});
+
+test('an empty write leaves the file size and the size budget untouched', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'workstation-stream-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const writer = createFileWriter(directory, new AbortController().signal, 4);
+  const handle = await writer.open('empty.bin');
+  assert.equal(await handle.writeAt(new Uint8Array(0), 1000), 0);
+  await handle.close();
+  assert.equal((await stat(path.join(directory, 'empty.bin'))).size, 0);
+});
+
+test('refuses to open a file that is already over the size limit', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'workstation-stream-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeFile(path.join(directory, 'oversized.bin'), 'abcde');
+  const writer = createFileWriter(directory, new AbortController().signal, 4);
+  await assert.rejects(() => writer.open('oversized.bin', { overwrite: true }), { code: 'LIMIT_EXCEEDED' });
+});
+
+test('truncates an existing file to the requested size when a download resumes', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'workstation-stream-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeFile(path.join(directory, 'partial.bin'), 'ABCDEFGH');
+  const writer = createFileWriter(directory, new AbortController().signal, 1_048_576);
+  const handle = await writer.open('partial.bin', { overwrite: true, truncateTo: 4 });
+  await handle.close();
+  const bytes = await readFile(path.join(directory, 'partial.bin'));
+  assert.equal(bytes.byteLength, 4);
+  assert.equal(bytes.toString(), 'ABCD');
 });
 
 test('refuses to write past the output size limit', async t => {

@@ -181,6 +181,9 @@ export function createFileWriter(root: string, signal: AbortSignal, maxBytes: nu
           await handle.truncate(options.truncateTo);
           extent = options.truncateTo;
         }
+        // A file that is already over the cap must not be handed back as a
+        // usable handle, otherwise the failure only surfaces on a later write.
+        if (extent > maxBytes) throw new ToolError('LIMIT_EXCEEDED', '输出文件超过写入大小限制。');
       } catch (error) {
         await handle.close();
         return fileError(error);
@@ -190,6 +193,9 @@ export function createFileWriter(root: string, signal: AbortSignal, maxBytes: nu
         async writeAt(buffer, position) {
           if (closed) throw new ToolError('ACCESS_DENIED', '文件句柄已关闭。');
           if (!Number.isSafeInteger(position) || position < 0) throw new ToolError('INVALID_INPUT', '写入位置无效。');
+          // An empty buffer writes nothing, so it must not move the extent or
+          // consume the size budget of the file.
+          if (buffer.byteLength === 0) return 0;
           // The limit is checked before the write, otherwise the segment that
           // crosses it is already on disk and the cap means nothing.
           const end = position + buffer.byteLength;
