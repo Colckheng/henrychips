@@ -113,7 +113,7 @@
     timeoutMs?: number;
   }
   export interface PublicHttp {
-    getHtml(url, signal): Promise<{ finalUrl: string; html: string; status: number }>;
+    getHtml(url, signal, options?): Promise<{ finalUrl: string; html: string; status: number }>;
     getJson(url, signal, options?): Promise<{ finalUrl: string; data: unknown; status: number }>;
     getBinary(url, signal, options?): Promise<{ finalUrl: string; bytes: Uint8Array; contentType: string; status: number }>;
     getRaw(url, signal, options?): Promise<PublicHttpResponse>;
@@ -123,6 +123,15 @@
     postJson(url, body: unknown, signal, options?): Promise<{ finalUrl: string; data: unknown; status: number }>;
     /** 新增：流式 GET，body 由调用方消费 */
     getStream(url, signal, options?): Promise<{ finalUrl: string; status: number; contentType: string; contentLength: number | null; body: NodeJS.ReadableStream }>;
+  }
+  // PublicHttpResponse 补一个响应头字典（读 Content-Range / Accept-Ranges 要用）
+  export interface PublicHttpResponse {
+    finalUrl: string;
+    status: number;
+    contentType: string;
+    bytes: Uint8Array;
+    setCookie: string[];
+    headers: Record<string, string>;
   }
   ```
 
