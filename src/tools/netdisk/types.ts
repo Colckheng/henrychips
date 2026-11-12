@@ -8,4 +8,6 @@ export interface ParsedShare {
   code: string | null;
   /** Full share link, handed to the platform adapter. */
   shareUrl: string;
+  /** Known only when the link shape states it; undefined means unknown. */
+  isDirectory?: boolean;
 }

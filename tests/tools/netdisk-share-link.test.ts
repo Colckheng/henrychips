@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isLanzouHost, parseShareLink } from '../../src/tools/netdisk/share-link.js';
+import { NETDISK_PLATFORM_LABELS, isLanzouHost, parseShareLink } from '../../src/tools/netdisk/share-link.js';
 
 test('recognises each supported platform from a bare link', () => {
   const cases: Array<[string, string]> = [
@@ -92,4 +92,89 @@ test('recognises the lanzou domain family and keeps ilanzou apart', () => {
     assert.equal(parseShareLink(`https://${host}/AbCdEf`)?.platform, 'lanzou', host);
   }
   assert.equal(parseShareLink('https://www.ilanzou.com/s/AbCdEf')?.platform, 'ilanzou');
+});
+
+test('matches the platform rules against the parsed host, not the raw url', () => {
+  // A mirror or redirect site that mentions a platform name in its path is
+  // not a share link of that platform.
+  assert.equal(parseShareLink('https://example.com/pan.quark.cn/s/AbCdEf'), null);
+  assert.equal(parseShareLink('https://example.com/pan.baidu.com/s/1XyZ'), null);
+  assert.equal(parseShareLink('https://example.com/lanzou.com/AbCdEf'), null);
+  assert.equal(parseShareLink('https://example.com/api/srr?sk=AbCdEf'), null);
+});
+
+test('keeps the lanzou host family and the recognizer in agreement', () => {
+  // A lanzou-looking path on a foreign host must not be recognised at all.
+  const foreign = parseShareLink('https://example.com/lanzou.com/AbCdEf');
+  assert.equal(foreign, null);
+  assert.equal(isLanzouHost('example.com'), false);
+  const genuine = parseShareLink('https://wwx.lanzoui.com/AbCdEf');
+  assert.equal(genuine?.platform, 'lanzou');
+  assert.equal(isLanzouHost(new URL('https://wwx.lanzoui.com/AbCdEf').hostname), true);
+});
+
+test('reads the share id behind a lanzou path prefix', () => {
+  const file = parseShareLink('https://wwx.lanzoui.com/i/AbCdEf');
+  assert.equal(file?.platform, 'lanzou');
+  assert.equal(file?.shareId, 'AbCdEf');
+  assert.equal(file?.isDirectory, false);
+  const folder = parseShareLink('https://wwx.lanzoui.com/b/AbCdEf');
+  assert.equal(folder?.platform, 'lanzou');
+  assert.equal(folder?.shareId, 'AbCdEf');
+  assert.equal(folder?.isDirectory, true);
+  const bare = parseShareLink('https://wwx.lanzoui.com/AbCdEf');
+  assert.equal(bare?.shareId, 'AbCdEf');
+  assert.equal(bare?.isDirectory, undefined);
+});
+
+test('recognises the premium edition in the same path shapes', () => {
+  assert.equal(parseShareLink('https://www.ilanzou.com/AbCdEf')?.platform, 'ilanzou');
+  assert.equal(parseShareLink('https://www.ilanzou.com/s/AbCdEf')?.platform, 'ilanzou');
+  const folder = parseShareLink('https://www.ilanzou.com/b/AbCdEf');
+  assert.equal(folder?.platform, 'ilanzou');
+  assert.equal(folder?.shareId, 'AbCdEf');
+  assert.equal(folder?.isDirectory, true);
+});
+
+test('does not take an archive password for a share passcode', () => {
+  const parsed = parseShareLink('https://pan.quark.cn/s/AbCdEf，解压密码：1234');
+  assert.equal(parsed?.platform, 'quark');
+  assert.equal(parsed?.code, null);
+});
+
+test('drops the trailing sentence punctuation from the share url', () => {
+  const parsed = parseShareLink('https://pan.quark.cn/s/AbCdEf.');
+  assert.equal(parsed?.shareUrl, 'https://pan.quark.cn/s/AbCdEf');
+  const comma = parseShareLink('https://pan.quark.cn/s/AbCdEf,');
+  assert.equal(comma?.shareUrl, 'https://pan.quark.cn/s/AbCdEf');
+});
+
+test('keeps the share url free of the prose it was glued to', () => {
+  const parsed = parseShareLink('【分享】https://pan.quark.cn/s/AbCdEf，提取码：wxyz');
+  assert.equal(parsed?.shareUrl, 'https://pan.quark.cn/s/AbCdEf');
+  assert.equal(parsed?.code, 'wxyz');
+});
+
+test('accepts a short passcode and does not truncate a long one', () => {
+  assert.equal(parseShareLink('提取码：abc https://pan.quark.cn/s/AbCdEf')?.code, 'abc');
+  assert.equal(parseShareLink('提取码：abcdefghi https://pan.quark.cn/s/AbCdEf')?.code, 'abcdefghi');
+});
+
+test('skips an unrelated link that sits before the share link', () => {
+  const parsed = parseShareLink('https://example.com/a https://wwx.lanzoui.com/AbCdEf');
+  assert.equal(parsed?.platform, 'lanzou');
+  assert.equal(parsed?.shareId, 'AbCdEf');
+});
+
+test('accepts an uppercase scheme', () => {
+  const parsed = parseShareLink('HTTPS://PAN.QUARK.CN/s/AbCdEf');
+  assert.equal(parsed?.platform, 'quark');
+  assert.equal(parsed?.shareId, 'AbCdEf');
+});
+
+test('names every platform it can recognise', () => {
+  assert.equal(NETDISK_PLATFORM_LABELS.lanzou, '蓝奏云');
+  assert.equal(NETDISK_PLATFORM_LABELS.ilanzou, '蓝奏云优享版');
+  assert.equal(NETDISK_PLATFORM_LABELS.quark, '夸克网盘');
+  assert.equal(Object.keys(NETDISK_PLATFORM_LABELS).length, 10);
 });
