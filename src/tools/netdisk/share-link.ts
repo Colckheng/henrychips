@@ -60,26 +60,29 @@ interface LanzouPath {
   isDirectory?: boolean;
 }
 
+// The path prefixes that stand in front of the share id: "i" marks a file,
+// "b" marks a folder and "s" carries no file or folder signal. A segment
+// outside this set is the share id itself, because a share id may be a single
+// character and dropping the whole link would be worse than reading it as one.
+const lanzouPrefixes = new Set(['i', 'b', 's']);
+
 // Lanzou and its premium edition share the same path shapes: a bare share id,
-// or a reserved single letter prefix in front of the share id. "b" marks a
-// folder share and "i" marks a file share, any other prefix says nothing
-// about the kind of share.
+// or a reserved prefix in front of the share id.
 function parseLanzouPath(pathname: string): LanzouPath | null {
   const segments = pathname.split('/').filter(Boolean);
   if (!segments.length) return null;
-  const prefix = segments[0];
-  // A single letter is a reserved prefix, so the share id is the next segment.
-  if (prefix.length === 1) {
-    if (segments.length < 2) return null;
+  const head = segments[0];
+  const marker = head.toLowerCase();
+  // Only a known prefix is skipped, and only when a share id stands behind it.
+  if (segments.length > 1 && lanzouPrefixes.has(marker)) {
     const shareId = segments[1];
     if (!/^[A-Za-z0-9]+$/.test(shareId)) return null;
-    const marker = prefix.toLowerCase();
     if (marker === 'b') return { shareId, isDirectory: true };
     if (marker === 'i') return { shareId, isDirectory: false };
     return { shareId };
   }
-  if (!/^[A-Za-z0-9]+$/.test(prefix)) return null;
-  return { shareId: prefix };
+  if (!/^[A-Za-z0-9]+$/.test(head)) return null;
+  return { shareId: head };
 }
 
 // Share messages glue Chinese prose onto the link, so only the ASCII run that
@@ -123,7 +126,11 @@ function parseCandidate(raw: string, codeFromText: string | null): ParsedShare |
     if (!hostRegex.test(host)) continue;
     const path = parseLanzouPath(url.pathname);
     if (!path) continue;
-    return { platform, shareId: path.shareId, code: queryCode ?? codeFromText, shareUrl: raw, isDirectory: path.isDirectory };
+    const parsed: ParsedShare = { platform, shareId: path.shareId, code: queryCode ?? codeFromText, shareUrl: raw };
+    // The flag is written only when the kind of share is known, so the
+    // presence of the key and its value always tell the same story.
+    if (path.isDirectory !== undefined) parsed.isDirectory = path.isDirectory;
+    return parsed;
   }
   return null;
 }

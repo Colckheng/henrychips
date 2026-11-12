@@ -178,3 +178,36 @@ test('names every platform it can recognise', () => {
   assert.equal(NETDISK_PLATFORM_LABELS.quark, '夸克网盘');
   assert.equal(Object.keys(NETDISK_PLATFORM_LABELS).length, 10);
 });
+
+test('reads a one character share id instead of dropping the link', () => {
+  const single = parseShareLink('https://wwx.lanzoui.com/a');
+  assert.equal(single?.platform, 'lanzou');
+  assert.equal(single?.shareId, 'a');
+  // A known prefix without a share id behind it is the share id itself.
+  assert.equal(parseShareLink('https://wwx.lanzoui.com/i')?.shareId, 'i');
+  // A segment that is not a known prefix is the share id, not a prefix.
+  assert.equal(parseShareLink('https://wwx.lanzoui.com/z/AbCdEf')?.shareId, 'z');
+  // The known prefixes still hand the share id over.
+  assert.equal(parseShareLink('https://wwx.lanzoui.com/s/AbCdEf')?.shareId, 'AbCdEf');
+  assert.equal(parseShareLink('https://wwx.lanzoui.com/i/AbCdEf')?.shareId, 'AbCdEf');
+  assert.equal(parseShareLink('https://wwx.lanzoui.com/b/AbCdEf')?.shareId, 'AbCdEf');
+});
+
+test('writes the directory flag only when the kind of share is known', () => {
+  const bare = parseShareLink('https://wwx.lanzoui.com/AbCdEf');
+  assert.ok(bare);
+  assert.equal('isDirectory' in bare, false);
+  assert.equal(bare.isDirectory, undefined);
+  const file = parseShareLink('https://wwx.lanzoui.com/i/AbCdEf');
+  assert.ok(file);
+  assert.equal('isDirectory' in file, true);
+  assert.equal(file.isDirectory, false);
+  const folder = parseShareLink('https://wwx.lanzoui.com/b/AbCdEf');
+  assert.ok(folder);
+  assert.equal('isDirectory' in folder, true);
+  assert.equal(folder.isDirectory, true);
+  // Platforms that cannot tell file from folder never carry the key.
+  const quark = parseShareLink('https://pan.quark.cn/s/AbCdEf');
+  assert.ok(quark);
+  assert.equal('isDirectory' in quark, false);
+});
