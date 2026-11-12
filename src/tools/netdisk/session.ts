@@ -1,4 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import { performance } from 'node:perf_hooks';
 import type { PublicHttp } from '../../contracts/tool.js';
 import { ToolError } from '../../core/errors.js';
 
@@ -7,6 +8,14 @@ export interface NetdiskSessionOptions {
   signal: AbortSignal;
   /** Minimum spacing between two requests to the same host, in milliseconds. Defaults to 250. */
   minIntervalMs?: number;
+}
+
+/** The response of a request that only reads headers, for a platform that hands out its session in them. */
+export interface NetdiskRawResponse {
+  finalUrl: string;
+  status: number;
+  headers: Record<string, string>;
+  setCookie: string[];
 }
 
 function hostOf(url: string): string {
@@ -53,39 +62,44 @@ export class NetdiskSession {
   /**
    * Reserves the next slot of the host. The slot is taken before the wait, so
    * requests that run at the same time still leave one interval between them.
+   * The clock is monotonic, so a jump of the wall clock cannot turn into a
+   * wait far longer than the interval.
    */
   private async waitForSlot(url: string): Promise<void> {
     const host = hostOf(url);
-    const now = Date.now();
+    const now = performance.now();
     const previous = this.nextRequestAt.get(host);
     const startAt = previous === undefined ? now : Math.max(now, previous + this.minIntervalMs);
     this.nextRequestAt.set(host, startAt);
     const wait = startAt - now;
-    if (wait > 0) await delay(wait);
+    if (wait <= 0) return;
+    try {
+      await delay(wait, undefined, { signal: this.options.signal });
+    } catch (error) {
+      if (error instanceof ToolError) throw error;
+      throw new ToolError('CANCELLED', '网盘请求已取消。');
+    }
   }
 
   /**
-   * Only the cookies of the requested host are attached. A Cookie header given
-   * by the caller wins over the jar, an empty one carries no session and is
-   * dropped instead of being sent as an empty header.
+   * Only the cookies of the requested host are attached. A Cookie header of
+   * the caller is dropped: the jar is the only way a cookie enters a request,
+   * so a session can never be carried over to another host by mistake.
    */
   private mergeCookieHeader(url: string, headers?: Record<string, string>): Record<string, string> | undefined {
-    const source: Record<string, string> = headers ?? {};
-    // The header name is matched case insensitively, so a caller that writes
-    // "cookie" does not end up sending two Cookie headers.
-    const cookieKey = Object.keys(source).find((key) => key.toLowerCase() === 'cookie');
-    const supplied = cookieKey === undefined ? '' : source[cookieKey];
     const rest: Record<string, string> = {};
-    for (const [key, value] of Object.entries(source)) {
-      if (key !== cookieKey) rest[key] = value;
+    for (const [key, value] of Object.entries(headers ?? {})) {
+      // Every spelling of the header is dropped, so two cookie headers can
+      // never reach the server.
+      if (/cookie/i.test(key)) continue;
+      rest[key] = value;
     }
     const jar = this.cookies.get(hostOf(url));
     const fromJar = jar && jar.size
       ? [...jar.entries()].map(([name, value]) => `${name}=${value}`).join('; ')
       : '';
-    const cookie = supplied || fromJar;
-    if (!cookie) return Object.keys(rest).length ? rest : undefined;
-    return { ...rest, Cookie: cookie };
+    if (!fromJar) return Object.keys(rest).length ? rest : undefined;
+    return { ...rest, Cookie: fromJar };
   }
 
   private async send<T>(
@@ -120,14 +134,32 @@ export class NetdiskSession {
     return this.send(url, headers, (merged) => this.options.http.getHtml(url, this.options.signal, { headers: merged }));
   }
 
+  /**
+   * The response of a request that only reads headers. A platform that hands
+   * out its session in a Set-Cookie header is read through this.
+   */
+  async raw(url: string, headers?: Record<string, string>): Promise<NetdiskRawResponse> {
+    return this.send(url, headers, async (merged) => {
+      const response = await this.options.http.getRaw(url, this.options.signal, { headers: merged });
+      return {
+        finalUrl: response.finalUrl,
+        status: response.status,
+        headers: response.headers,
+        setCookie: response.setCookie,
+      };
+    });
+  }
+
   /** Reads the headers of a one byte range request, to learn whether the direct link supports resuming. */
-  async probe(url: string, headers?: Record<string, string>): Promise<{ status: number; location?: string; contentRange?: string; acceptRanges?: string }> {
+  async probe(url: string, headers?: Record<string, string>): Promise<{ finalUrl: string; status: number; location?: string; contentRange?: string; acceptRanges?: string }> {
     return this.send(url, headers, async (merged) => {
       const response = await this.options.http.getRaw(url, this.options.signal, {
-        headers: { Range: 'bytes=0-0', ...merged },
+        // The probe asks for one byte, so its own range wins over the caller's.
+        headers: { ...merged, Range: 'bytes=0-0' },
         maxBytes: 1024,
       });
       return {
+        finalUrl: response.finalUrl,
         status: response.status,
         location: response.headers.location,
         contentRange: response.headers['content-range'],
