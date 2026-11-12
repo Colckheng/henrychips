@@ -1,15 +1,43 @@
-import test from 'node:test';
+import test, { after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { getProjectRoot, loadConfig } from '../../src/core/config.js';
 
+/**
+ * The environment provides credentials of the machine, so the child process
+ * would list a platform that the test never configured. The variables are
+ * cleared for every test and put back at the end of the file.
+ */
+const ENV_NAMES = [
+  'HENRY_NETDISK_BAIDU_BDUSS',
+  'HENRY_NETDISK_PAN123_USERNAME',
+  'HENRY_NETDISK_PAN123_PASSWORD',
+  'HENRY_NETDISK_XUNLEI_USERNAME',
+  'HENRY_NETDISK_XUNLEI_PASSWORD',
+];
+const savedEnv = new Map(ENV_NAMES.map(name => [name, process.env[name]]));
+beforeEach(() => { for (const name of ENV_NAMES) delete process.env[name]; });
+after(() => {
+  for (const [name, value] of savedEnv) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+});
+
+/** The child gets an environment without the credential variables. */
+function childEnvironment(): NodeJS.ProcessEnv {
+  const environment = { ...process.env };
+  for (const name of ENV_NAMES) delete environment[name];
+  return environment;
+}
+
 async function runCli(args: string[], configPath: string, stdin?: string) {
-  const child = spawn(process.execPath, ['--import', pathToFileURL(path.join(getProjectRoot(), 'node_modules/tsx/dist/loader.mjs')).href, path.join(getProjectRoot(), 'src/adapters/cli/main.ts'), ...args, '--config', configPath], { cwd: tmpdir(), stdio: 'pipe' });
+  const child = spawn(process.execPath, ['--import', pathToFileURL(path.join(getProjectRoot(), 'node_modules/tsx/dist/loader.mjs')).href, path.join(getProjectRoot(), 'src/adapters/cli/main.ts'), ...args, '--config', configPath], { cwd: tmpdir(), stdio: 'pipe', env: childEnvironment() });
   let stdout = '', stderr = '';
   child.stdout.on('data', chunk => { stdout += chunk; });
   child.stderr.on('data', chunk => { stderr += chunk; });
@@ -100,4 +128,65 @@ test('CLI manages the credentials without a value in the command line', async t 
   const emptyAgain = await runCli(['credentials', 'list'], configPath);
   assert.equal(emptyAgain.code, 0, emptyAgain.stderr);
   assert.match(emptyAgain.stdout, /尚未配置任何网盘凭证/);
+});
+
+test('CLI binds every value flag to the line at its own position', async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'workstation-cli-credentials-order-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const { configPath: _, ...base } = await loadConfig();
+  const stateDirectory = path.join(dir, 'state');
+  const configPath = path.join(dir, 'config.json');
+  await writeFile(configPath, JSON.stringify({ ...base, stateDirectory }));
+  const credentialFile = path.join(stateDirectory, 'netdisk-credentials.json');
+
+  // The password flag comes first, so the first line is the password and
+  // the second one is the username.
+  const set = await runCli(['credentials', 'set', 'pan123', '--password-stdin', '--username-stdin'], configPath, 'line-one\nline-two\n');
+  assert.equal(set.code, 0, set.stderr);
+  assert.equal(set.stdout.includes('line-one'), false);
+  assert.equal(set.stderr.includes('line-one'), false);
+  const stored = JSON.parse(await readFile(credentialFile, 'utf8'));
+  assert.deepEqual(stored, { pan123: { password: 'line-one', username: 'line-two' } });
+
+  // The other order swaps the lines, so the values must not be swapped.
+  const reversed = await runCli(['credentials', 'set', 'xunlei', '--username-stdin', '--password-stdin'], configPath, 'line-one\nline-two\n');
+  assert.equal(reversed.code, 0, reversed.stderr);
+  const reversedStored = JSON.parse(await readFile(credentialFile, 'utf8'));
+  assert.deepEqual(reversedStored.xunlei, { username: 'line-one', password: 'line-two' });
+
+  // One value flag takes one line, so a file with two lines has a surplus.
+  const surplus = await runCli(['credentials', 'set', 'baidu', '--bduss-stdin'], configPath, 'first\nsecond\n');
+  assert.equal(surplus.code, 2);
+  assert.match(surplus.stderr, /2 行/);
+  assert.match(surplus.stderr, /只需要 1 行/);
+  assert.equal(surplus.stdout.includes('first'), false);
+  assert.equal(surplus.stderr.includes('first'), false);
+  // The refused write must not leave a credential behind.
+  assert.equal(existsSync(credentialFile) ? JSON.parse(await readFile(credentialFile, 'utf8')).baidu : undefined, undefined);
+});
+
+test('CLI keeps the parser message of a command that is not the credentials one', async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'workstation-cli-parse-error-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const { configPath: _, ...base } = await loadConfig();
+  const configPath = path.join(dir, 'config.json');
+  await writeFile(configPath, JSON.stringify({ ...base, stateDirectory: path.join(dir, 'state') }));
+
+  const missing = await runCli(['run', 'text_stats', '--input'], configPath);
+  assert.equal(missing.code, 2);
+  // The message of the parser names the option that was wrong, so it must
+  // not be replaced by the generic text of the command.
+  assert.match(missing.stderr, /--input/);
+  assert.match(missing.stderr, /argument/);
+  assert.equal(missing.stderr.includes('命令格式错误'), false);
+
+  const notBoolean = await runCli(['list', '--json=x'], configPath);
+  assert.equal(notBoolean.code, 2);
+  assert.match(notBoolean.stderr, /--json/);
+  assert.equal(notBoolean.stderr.includes('命令格式错误'), false);
+
+  // The removed credential flags still get their own hint.
+  const legacy = await runCli(['credentials', 'set', 'baidu', '--bduss'], configPath);
+  assert.equal(legacy.code, 2);
+  assert.match(legacy.stderr, /标准输入/);
 });

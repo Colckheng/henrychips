@@ -16,8 +16,11 @@ credentials clear <platform>
 
 --config <absolute-path> 指定配置文件
 
-凭证值从标准输入读取，每个字段一行，顺序与该平台的字段顺序一致（百度：bduss；123 云盘与迅雷：username、password）。
+凭证值从标准输入读取：每个取值 flag 独占一行，第 N 个取值 flag 取第 N 行。
   npm run cli -- credentials set baidu --bduss-stdin < credential.txt
+  npm run cli -- credentials set pan123 --username-stdin --password-stdin < credentials.txt
+第二条里第 1 行是 username、第 2 行是 password，因为这两个取值 flag 就是这个顺序写的。
+标准输入的行数必须与取值 flag 的个数相同，多余的行会被拒绝。
 不要把凭证值作为命令行参数传入：命令行会进入 shell 历史与 npm 的调试日志。
 也可以改用环境变量 HENRY_NETDISK_<平台>_<字段>，该方式不写入任何文件。
 `;
@@ -32,8 +35,12 @@ const stdinFlags = [
   { flag: 'password-stdin', field: 'password' },
 ] as const;
 
+type StdinFlag = (typeof stdinFlags)[number];
+
 /** The flags that were removed, so a stale command line gets a clear hint. */
 const removedFlags = ['--bduss', '--username', '--password'];
+/** A removed flag is matched as a whole word, so "--username-stdin" is not one. */
+const removedFlagPatterns = removedFlags.map(flag => new RegExp(`${flag}(?![-\\w])`));
 
 async function readCredentialValues(count: number): Promise<string[]> {
   if (process.stdin.isTTY) throw new Error('请通过标准输入提供凭证值，例如：npm run cli -- credentials set baidu --bduss-stdin < credential.txt');
@@ -42,7 +49,28 @@ async function readCredentialValues(count: number): Promise<string[]> {
   const lines = Buffer.concat(chunks).toString('utf8').split(/\r?\n/);
   if (lines.length && lines[lines.length - 1] === '') lines.pop();
   if (lines.length < count) throw new Error(`标准输入中只有 ${lines.length} 行可用，需要 ${count} 行。`);
-  return lines.slice(0, count);
+  // A line that no flag asks for would look like a credential that was
+  // stored, so the surplus is refused instead of dropped.
+  if (lines.length > count) throw new Error(`标准输入有 ${lines.length} 行，但本次只需要 ${count} 行，请只提供所需的行。`);
+  return lines;
+}
+
+/**
+ * The value flags keep the order they were written in, so every flag owns the
+ * line at its own position. A pair that was written in the other order can no
+ * longer be swapped, because the line follows the flag and not the platform.
+ */
+function stdinFlagsInOrder(tokens: readonly { kind: string; name?: string }[]): StdinFlag[] {
+  const seen = new Set<string>();
+  const ordered: StdinFlag[] = [];
+  for (const token of tokens) {
+    if (token.kind !== 'option') continue;
+    const entry = stdinFlags.find(candidate => candidate.flag === token.name);
+    if (!entry || seen.has(entry.flag)) continue;
+    seen.add(entry.flag);
+    ordered.push(entry);
+  }
+  return ordered;
 }
 
 /** The source of a credential is part of the state, but its value is not. */
@@ -55,18 +83,21 @@ function parseCliArgs() {
   try {
     return parseArgs({
       allowPositionals: true,
+      tokens: true,
       options: { config: { type: 'string' }, json: { type: 'boolean' }, input: { type: 'string' }, 'input-file': { type: 'string' }, 'bduss-stdin': { type: 'boolean' }, 'username-stdin': { type: 'boolean' }, 'password-stdin': { type: 'boolean' }, help: { type: 'boolean', short: 'h' } },
     });
   } catch (error) {
     // The message of the parser names the option, never its value.
     const message = error instanceof Error ? error.message : '';
-    if (removedFlags.some(flag => message.includes(flag))) throw new Error('凭证值请通过标准输入提供，例如 --bduss-stdin；请使用 --help 查看用法。');
-    throw new Error('命令格式错误，请使用 --help。');
+    if (removedFlagPatterns.some(pattern => pattern.test(message))) throw new Error('凭证值请通过标准输入提供，例如 --bduss-stdin；请使用 --help 查看用法。');
+    // A parse error of another command keeps its own message, because it
+    // names the option that was wrong.
+    throw new Error(message || '命令格式错误，请使用 --help。');
   }
 }
 
 async function main() {
-  const { values, positionals } = parseCliArgs();
+  const { values, positionals, tokens } = parseCliArgs();
   const [command, name, ...extra] = positionals;
   if (values.help || !command) {
     process.stdout.write(helpText);
@@ -116,9 +147,9 @@ async function main() {
       const rejected = wanted.filter(entry => !fields.includes(entry.field));
       if (rejected.length) throw new Error(`${platform} 不接受 ${rejected.map(entry => `--${entry.flag}`).join('、')}，可用字段：${allowed.map(entry => `--${entry.flag}`).join('、')}。`);
       if (!wanted.length) throw new Error(`请至少提供 ${allowed.map(entry => `--${entry.flag}`).join('、')} 之一。`);
-      // The lines are read in the order of the platform, so every field has
-      // one fixed line.
-      const requested = allowed.filter(entry => values[entry.flag]);
+      // Every flag owns the line at its own position in the command line, so
+      // two flags in the other order cannot swap their values.
+      const requested = stdinFlagsInOrder(tokens).filter(entry => values[entry.flag]);
       const lines = await readCredentialValues(requested.length);
       const store = credentials.readCredentials(stateDirectory);
       const entry: credentials.PlatformCredential = { ...(Object.hasOwn(store, platform) ? store[platform] : {}) };

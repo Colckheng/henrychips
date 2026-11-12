@@ -1,6 +1,6 @@
 import test, { after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -155,5 +155,18 @@ test('leaves no temporary file behind after a write', async t => {
   const directory = await mkdtemp(path.join(tmpdir(), 'workstation-credentials-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   writeCredentials(directory, { baidu: { bduss: 'token' } });
-  assert.equal(existsSync(`${credentialFilePath(directory)}.tmp`), false);
+  const leftovers = (await readdir(directory)).filter(name => name.endsWith('.tmp'));
+  assert.deepEqual(leftovers, []);
+});
+
+test('gives every write its own temporary file', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'workstation-credentials-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  // A temporary file of an earlier attempt must not block the next write,
+  // so the name of the temporary file is not a fixed one.
+  const file = credentialFilePath(directory);
+  await writeFile(`${file}.tmp`, 'stale', 'utf8');
+  writeCredentials(directory, { baidu: { bduss: 'token' } });
+  assert.deepEqual(readCredentials(directory), { baidu: { bduss: 'token' } });
+  assert.deepEqual((await readdir(directory)).filter(name => name.endsWith('.tmp')), ['netdisk-credentials.json.tmp']);
 });

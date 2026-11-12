@@ -1,4 +1,5 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { NetdiskPlatform } from './types.js';
 
@@ -101,9 +102,11 @@ function cleanStore(store: CredentialStore): CredentialStore {
 export function writeCredentials(stateDirectory: string, store: CredentialStore): void {
   mkdirSync(stateDirectory, { recursive: true });
   const file = credentialFilePath(stateDirectory);
-  const temporary = `${file}.tmp`;
+  // Two writes that overlap must not share a temporary file, so the name
+  // carries a random part and the file is created exclusively.
+  const temporary = `${file}.${randomUUID()}.tmp`;
   try {
-    writeFileSync(temporary, `${JSON.stringify(cleanStore(store), null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    writeFileSync(temporary, `${JSON.stringify(cleanStore(store), null, 2)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     renameSync(temporary, file);
   } catch (error) {
     // A temporary file holds a credential, so it must not survive a failed write.
