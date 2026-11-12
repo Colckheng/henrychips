@@ -111,6 +111,13 @@ test('registers the lanzou adapter under its platform', () => {
   assert.equal(adaptersByPlatform.get('lanzou')?.label, '蓝奏云');
 });
 
+test('reports a link that is no url instead of ending in a raw error', () => {
+  assert.throws(
+    () => lanzouAdapter.parseSharePage('<html></html>', 'not a url'),
+    (error: unknown) => error instanceof ToolError && error.code === 'INVALID_INPUT',
+  );
+});
+
 test('refuses a share with a passcode when no code was given', async () => {
   const { http } = fakeHttp({ '/iXnuF4c8sqmb': { html: '<html><div id="pwbox">请输入密码</div></html>' } });
   await assert.rejects(

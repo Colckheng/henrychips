@@ -53,13 +53,24 @@ function fileIdOfQuery(address: string): string | null {
   catch { return null; }
 }
 
+/**
+ * A url of the platform is read from a page, so it can be malformed. A url
+ * that cannot be read is reported as a failure of the platform instead of
+ * ending in a raw error.
+ */
+function safeUrl(value: string, base?: string): URL | null {
+  try { return new URL(value, base); }
+  catch { return null; }
+}
+
 export const lanzouAdapter: LanzouAdapter = {
   platform: 'lanzou',
   label: '蓝奏云',
   requiresCredential: false,
 
   parseSharePage(html, shareUrl) {
-    const url = new URL(shareUrl);
+    const url = safeUrl(shareUrl);
+    if (!url) throw new ToolError('INVALID_INPUT', '请输入有效的蓝奏云分享链接。');
     const baseUrl = `${url.protocol}//${url.host}`;
     const needsPwd = html.includes('请输入密码') || html.includes('id="pwbox"')
       || html.includes('input_password') || html.includes('密码不正确') || html.includes('function down_p(');
@@ -126,7 +137,8 @@ export const lanzouAdapter: LanzouAdapter = {
     let html = member ? await this.fetchPage(context, member, referer) : page.html;
     const iframe = /<iframe[^>]+src=["']([^"']+)["']/i.exec(html)?.[1];
     if (iframe) {
-      const absolute = new URL(iframe, page.baseUrl).href;
+      const absolute = safeUrl(iframe, page.baseUrl)?.href;
+      if (!absolute) throw new ToolError('TOOL_FAILED', '蓝奏云下载参数缺失，解析失败。');
       html = await this.fetchPage(context, absolute, referer);
       referer = absolute;
     }
@@ -162,7 +174,9 @@ export const lanzouAdapter: LanzouAdapter = {
       throw new ToolError('TOOL_FAILED', `蓝奏云解析失败：${reason || '接口未返回下载参数。'}`);
     }
     if (!data.dom || !data.url) throw new ToolError('TOOL_FAILED', '蓝奏云解析失败：接口未返回下载地址。');
-    const jump = `${new URL(data.dom).protocol}//${new URL(data.dom).host}/file/${data.url}`;
+    const node = safeUrl(data.dom);
+    if (!node) throw new ToolError('TOOL_FAILED', '蓝奏云解析失败：接口未返回下载地址。');
+    const jump = `${node.protocol}//${node.host}/file/${data.url}`;
     const verified = await this.verifyLink(context, jump, page.baseUrl);
     return {
       path: file.path, name: file.name, sizeBytes: file.sizeBytes,
@@ -233,7 +247,12 @@ export const lanzouAdapter: LanzouAdapter = {
     let url = jump;
     for (let attempt = 0; attempt < 5; attempt++) {
       const probe = await context.session.probe(url, { Referer: shareOrigin, 'User-Agent': WEB_UA });
-      if (probe.location) { url = new URL(probe.location, url).href; continue; }
+      if (probe.location) {
+        const next = safeUrl(probe.location, url);
+        if (!next) throw new ToolError('TOOL_FAILED', '蓝奏云下载地址探测失败（重定向目标无效）。');
+        url = next.href;
+        continue;
+      }
       if (probe.status === 206 || probe.status === 200) {
         // The node may answer with the "验证并下载" page or with the human
         // check instead of the file. Such a page is not a direct link, so it
