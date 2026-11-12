@@ -797,7 +797,9 @@ git commit -m "feat: 新增网盘分享链接识别，覆盖 10 类平台与四�
 
 - [ ] **Step 1: 写失败测试**
 
-新建 `tests/tools/netdisk-session.test.ts`：
+新建 `tests/tools/netdisk-session.test.ts`。
+
+**注意：下面的测试片段是初版，已被 Task 4 的三轮评审修订取代，照抄会得到错误的行为。** 最终形态以仓库里的 `tests/tools/netdisk-session.test.ts` 为准（评审确定的行为是：调用方传入的 `Cookie` / `authorization` 头一律剥离，凭证只能经 `setCookie` / `setAuthorization` 进入本域 jar；`probe` 返回 `finalUrl`；`raw` 有 64 KiB 默认上限；另有 `head` 方法用于只取响应头与整链 `Set-Cookie`）。初版片段仅保留作对照：
 
 ```ts
 import test from 'node:test';
@@ -2235,6 +2237,7 @@ function fakeHttp(payload = Buffer.from('hello')): PublicHttp {
       finalUrl: url, status: 200, contentType: 'application/octet-stream', contentLength: payload.length,
       body: Readable.from([payload]),
     }),
+    getHead: async (url) => ({ finalUrl: url, status: 200, contentType: '', headers: {}, setCookie: [] }),
   } as unknown as PublicHttp;
 }
 

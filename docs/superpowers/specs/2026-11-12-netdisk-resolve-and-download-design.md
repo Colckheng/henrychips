@@ -245,9 +245,13 @@ postJson(url, body, signal, options)    // application/json
 
 `range` 必须在白名单里，否则请求头会被静默丢弃（[public-http.ts:89](file:///D:/HenryChips/src/core/public-http.ts#L89) 只保留白名单内的头），分片请求会全部退化成整文件下载。
 
-**Cookie 隔离**：`NetdiskSession` 维护 `Map<host, Map<name, value>>`，Cookie 只发回原 host。夸克的 Cookie 绝不会发给 115。这一点由 `NetdiskSession` 内部强制，不依赖调用方自觉。
+**Cookie 隔离**：`NetdiskSession` 维护 `Map<host, Map<name, value>>`，Cookie 只发回原 host。夸克的 Cookie 绝不会发给 115。这一点由 `NetdiskSession` 内部强制，不依赖调用方自觉——**调用方传入的 `Cookie` 请求头一律被剥离**，Cookie 只能通过 `setCookie()` 进入本域的 jar。`Authorization` 同理：按 host 存储，调用方传入的 `authorization` 头一律剥离，账号级令牌通过 `setAuthorization(url, token)` 进入本域。
 
-**限速退避**：蓝奏云分页之间间隔 250ms；连续失败按 `600ms × (失败次数 + 1)` 退避；同一 host 最多 3 次重试；命中"请求过于频繁"时只退避重试同一页，不跳页。
+**跨 host 重定向不得携带凭证**：`PublicHttp` 跟随重定向时，若目标 host 与当前 host 不同，剥掉 `cookie` 与 `authorization` 两个凭证类请求头，并把请求降级为 GET、丢弃请求体（请求体里也可能带令牌）。网盘的「分享页 → CDN」是常态的跨 host 重定向，不剥就会把登录态发到 CDN。同 host 重定向保留凭证与请求体。
+
+**响应 Cookie 的捕获**：部分平台（115 的 CDN Cookie 约 900 秒有效）把会话凭证放在响应 `Set-Cookie` 里，适配器必须能读到并交给下游。因此会话层要提供能拿到原始响应头与 `Set-Cookie` 的方法，且**重定向链上每一跳的 `Set-Cookie` 都要收集**——「先下发 cookie、再重定向到 CDN」是常见模式，只报最终响应的 cookie 会漏掉它。
+
+**限速退避**：`NetdiskSession` 只负责**最小请求间隔**（默认 250ms，按 host 计，不同平台之间互不影响）。失败重试与退避策略（蓝奏云分页间隔、连续失败按 `600ms × (失败次数 + 1)` 退避、最多 3 次重试、命中"请求过于频繁"时只退避重试同一页不跳页）由**适配器**按平台实现，因为各平台的风控形态不同，会话层不该知道。
 
 **响应体超时**：通用工具仍保持 10 秒。下载场景由新增的流式接口单独指定更长超时（见 6.2），不改通用路径。
 
