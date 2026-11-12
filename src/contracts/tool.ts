@@ -58,6 +58,14 @@ export interface PublicHttpResponse {
   setCookie: string[];
   headers: Record<string, string>;
 }
+/** The head of a response: the status, the headers and the cookies of the whole redirect chain, without the body. */
+export interface PublicHttpHead {
+  finalUrl: string;
+  status: number;
+  contentType: string;
+  setCookie: string[];
+  headers: Record<string, string>;
+}
 /** 契约同时被浏览器端编译，因此用结构化类型描述流式响应体，不依赖 Node 类型。 */
 export interface PublicHttpBody extends AsyncIterable<Uint8Array> {
   resume(): void;
@@ -68,6 +76,7 @@ export interface PublicHttp {
   getJson(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; data: unknown; status: number }>;
   getBinary(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; bytes: Uint8Array; contentType: string; status: number }>;
   getRaw(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<PublicHttpResponse>;
+  getHead(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<PublicHttpHead>;
   postForm(url: string, fields: Record<string, string>, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; data: unknown; status: number }>;
   postJson(url: string, body: unknown, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; data: unknown; status: number }>;
   getStream(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; status: number; contentType: string; contentLength: number | null; body: PublicHttpBody; headers: Record<string, string> }>;

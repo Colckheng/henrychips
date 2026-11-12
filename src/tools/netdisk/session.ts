@@ -19,6 +19,17 @@ export interface NetdiskRawResponse {
 }
 
 /**
+ * The response head of a request that only reads headers. A platform that
+ * hands out its session in a Set-Cookie header is read through this.
+ */
+export interface NetdiskHeadResponse {
+  finalUrl: string;
+  status: number;
+  headers: Record<string, string>;
+  setCookie: string[];
+}
+
+/**
  * The body a raw request may read. A raw request only looks at the response
  * headers, so a small body is enough; without a cap a redirect to a CDN file
  * would pull the whole file into memory.
@@ -179,6 +190,24 @@ export class NetdiskSession {
   async raw(url: string, headers?: Record<string, string>, maxBytes: number = RAW_MAX_BYTES): Promise<NetdiskRawResponse> {
     return this.send(url, headers, async (merged) => {
       const response = await this.options.http.getRaw(url, this.options.signal, { headers: merged, maxBytes });
+      return {
+        finalUrl: response.finalUrl,
+        status: response.status,
+        headers: response.headers,
+        setCookie: response.setCookie,
+      };
+    });
+  }
+
+  /**
+   * The response head of a request, without its body. A platform that sets a
+   * cookie and then redirects to a CDN is read through this: the body of the
+   * CDN response can be a whole file, and reading it would throw the cookies
+   * of the chain away.
+   */
+  async head(url: string, headers?: Record<string, string>): Promise<NetdiskHeadResponse> {
+    return this.send(url, headers, async (merged) => {
+      const response = await this.options.http.getHead(url, this.options.signal, { headers: merged });
       return {
         finalUrl: response.finalUrl,
         status: response.status,

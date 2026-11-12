@@ -440,6 +440,87 @@ test('keeps its own content type over the one of the caller', async (t) => {
   assert.equal(seen.type, 'application/json');
 });
 
+test('drops the content type with the body on a redirect to another host', async (t) => {
+  const seen: Array<{ host: string; type?: string }> = [];
+  await transport(t, (req, res) => {
+    seen.push({ host: req.headers.host ?? '', type: req.headers['content-type'] });
+    if (req.headers.host === 'share.test') {
+      res.writeHead(302, { location: 'http://cdn.test/api' });
+      res.end();
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end('{}');
+  });
+  await createPublicHttp(2_097_152).postJson('http://share.test/api', { token: 'secret' }, signal(), {
+    headers: { 'Content-Type': 'application/json' },
+  });
+  assert.equal(seen.length, 2);
+  assert.equal(seen[0].type, 'application/json');
+  // The body is gone, so the content type that describes it is gone as well.
+  assert.equal(seen[1].type, undefined);
+});
+
+test('keeps the content type on a redirect inside the same host', async (t) => {
+  const seen: Array<{ type?: string }> = [];
+  await transport(t, (req, res) => {
+    req.on('data', () => {});
+    req.on('end', () => {
+      seen.push({ type: req.headers['content-type'] });
+      if (req.url === '/start') {
+        res.writeHead(307, { location: '/next' });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{}');
+    });
+  });
+  await createPublicHttp(2_097_152).postJson('http://share.test/start', { token: 'secret' }, signal());
+  assert.equal(seen.length, 2);
+  assert.equal(seen[1].type, 'application/json');
+});
+
+test('reads the response head without the body of a large response', async (t) => {
+  const state = await transport(t, (req, res) => {
+    if (req.headers.host === 'share.test') {
+      res.writeHead(302, { location: 'http://cdn.test/file.bin', 'set-cookie': 'cdn_sid=abc; Path=/' });
+      res.end();
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': '4096', 'set-cookie': 'final=1; Path=/' });
+    res.end('x'.repeat(4096));
+  });
+  const head = await createPublicHttp(1024).getHead('http://share.test/', signal());
+  assert.equal(head.status, 200);
+  assert.equal(head.finalUrl, 'http://cdn.test/file.bin');
+  // The cookie of the first hop is the one the caller is after, and the large
+  // body of the CDN response does not stop the head from being read.
+  assert.deepEqual(head.setCookie, ['cdn_sid=abc; Path=/', 'final=1; Path=/']);
+  assert.equal(head.headers['content-length'], '4096');
+  // The unread body must not leave the socket dangling.
+  await Promise.all(state.closed);
+  assert.ok(state.sockets.every(socket => socket.destroyed));
+});
+
+test('keeps the cookies of a redirect chain readable when the body is too large', async (t) => {
+  await transport(t, (req, res) => {
+    if (req.headers.host === 'share.test') {
+      res.writeHead(302, { location: 'http://cdn.test/file.bin', 'set-cookie': 'cdn_sid=abc; Path=/' });
+      res.end();
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': '4096' });
+    res.end('x'.repeat(4096));
+  });
+  // Reading the body of the CDN response fails on the size limit.
+  await assert.rejects(createPublicHttp(1024).getRaw('http://share.test/', signal()), { code: 'LIMIT_EXCEEDED' });
+  // The head of the same chain is still readable, so the cookie of the first
+  // hop does not get lost with the body.
+  const head = await createPublicHttp(1024).getHead('http://share.test/', signal());
+  assert.deepEqual(head.setCookie, ['cdn_sid=abc; Path=/']);
+});
+
 test('filters request headers against the allowlist', () => {
   const allowed = safeRequestHeaders({ Range: 'bytes=0-3', Authorization: 'Bearer token', 'X-Requested-With': 'XMLHttpRequest' });
   assert.deepEqual(allowed, { range: 'bytes=0-3', authorization: 'Bearer token', 'x-requested-with': 'XMLHttpRequest' });

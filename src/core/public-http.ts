@@ -117,6 +117,20 @@ function withoutCredentials(headers?: Record<string, string>): Record<string, st
 }
 
 /**
+ * Drops the headers that describe a body. A request that carries no body has
+ * no content type to describe.
+ */
+function withoutContentType(headers?: Record<string, string>): Record<string, string> | undefined {
+  if (!headers) return headers;
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (/^content-type$/i.test(key)) continue;
+    result[key] = value;
+  }
+  return result;
+}
+
+/**
  * Counts bytes on the pass-through path so the size limit holds for streamed
  * responses too. The body is never buffered; the limit violation surfaces as a
  * stream error the caller sees while consuming.
@@ -145,7 +159,7 @@ function limitedBody(source: Readable, limit: number): Readable {
 
 export function createPublicHttp(maxBytes: number): PublicHttp {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new RangeError('maxBytes must be a positive safe integer');
-  type Kind = 'html' | 'json' | 'binary' | 'stream';
+  type Kind = 'html' | 'json' | 'binary' | 'stream' | 'head';
   type FetchOptions = PublicHttpRequest & { method?: 'GET' | 'POST'; body?: string; contentType?: string };
   type BufferedResult = {
     finalUrl: string;
@@ -165,9 +179,17 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
     body: PublicHttpBody;
     headers: Record<string, string>;
   };
+  type HeadResult = {
+    finalUrl: string;
+    status: number;
+    contentType: string;
+    setCookie: string[];
+    headers: Record<string, string>;
+  };
   async function fetchPublic(value: string, signal: AbortSignal, kind: 'stream', options?: FetchOptions): Promise<StreamResult>;
+  async function fetchPublic(value: string, signal: AbortSignal, kind: 'head', options?: FetchOptions): Promise<HeadResult>;
   async function fetchPublic(value: string, signal: AbortSignal, kind: 'html' | 'json' | 'binary', options?: FetchOptions): Promise<BufferedResult>;
-  async function fetchPublic(value: string, signal: AbortSignal, kind: Kind, options?: FetchOptions): Promise<BufferedResult | StreamResult> {
+  async function fetchPublic(value: string, signal: AbortSignal, kind: Kind, options?: FetchOptions): Promise<BufferedResult | StreamResult | HeadResult> {
     const limit = options?.maxBytes ?? maxBytes;
     const timeoutMs = options?.timeoutMs ?? 10_000;
     checkAbort(signal);
@@ -179,6 +201,9 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
     // host turns the request into a plain GET without a body.
     let method = options?.method ?? 'GET';
     let requestBody = options?.body;
+    // The content type describes the body, so it is only sent while a body
+    // is sent. A hop without a body has no content type to describe.
+    const requestContentType = options?.contentType;
     // Every hop of the chain can set a cookie, so they are collected all.
     const setCookie: string[] = [];
     for (let redirects = 0; ; redirects++) {
@@ -199,7 +224,7 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
             ...safeRequestHeaders(requestHeaders),
             // The content type of the request wins over the one of the caller,
             // because it describes the body that is actually sent.
-            ...(options?.contentType ? { 'content-type': options.contentType } : {}),
+            ...(requestBody !== undefined && requestContentType ? { 'content-type': requestContentType } : {}),
           },
           ...(requestBody !== undefined ? { body: requestBody } : {}),
         });
@@ -223,7 +248,7 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
             url = validatePublicUrl(target.href, options?.allowedPorts ?? []);
             // A redirect to another host must not carry the credentials of the old one.
             if (hostname(url) !== currentHost) {
-              requestHeaders = withoutCredentials(requestHeaders);
+              requestHeaders = withoutContentType(withoutCredentials(requestHeaders));
               // The body can carry a token as well, so the hop to the new host
               // is a plain GET without a body.
               method = 'GET';
@@ -243,8 +268,13 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
           const encoding = headers['content-encoding'];
           if (encoding && encoding !== 'identity') throw new ToolError('UNSUPPORTED_FORMAT', '网页未按请求返回未压缩的内容。');
           const declared = headers['content-length'];
-          if (declared !== undefined && Number(declared) > limit) throw new ToolError('LIMIT_EXCEEDED', '网页超过读取大小限制。');
+          if (kind !== 'head' && declared !== undefined && Number(declared) > limit) throw new ToolError('LIMIT_EXCEEDED', '网页超过读取大小限制。');
           const responseHeaders = Object.fromEntries(Object.entries(headers).map(([key, value]) => [key, Array.isArray(value) ? value.join(', ') : String(value)]));
+          if (kind === 'head') {
+            // The body is left unread, so a large one cannot make the head
+            // unreadable. The cookies of the chain are already collected.
+            return { finalUrl: url.href, status: statusCode, contentType, setCookie, headers: responseHeaders };
+          }
           if (kind === 'stream') {
             const contentLength = declared === undefined ? null : Number(declared);
             // The caller owns the body now, so the agent must stay alive until
@@ -323,6 +353,16 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
       try {
         const result = await fetchPublic(value, signal, 'binary', options);
         return { finalUrl: result.finalUrl, status: result.status, contentType: result.contentType, bytes: new Uint8Array(result.bytes), setCookie: result.setCookie, headers: result.headers };
+      } catch (error) {
+        checkAbort(signal);
+        if (error instanceof ToolError) throw error;
+        throw new ToolError('NETWORK_ERROR', '无法读取远程资源，请检查地址或稍后重试。');
+      }
+    },
+    async getHead(value, signal, options) {
+      try {
+        const result = await fetchPublic(value, signal, 'head', options);
+        return { finalUrl: result.finalUrl, status: result.status, contentType: result.contentType, setCookie: result.setCookie, headers: result.headers };
       } catch (error) {
         checkAbort(signal);
         if (error instanceof ToolError) throw error;

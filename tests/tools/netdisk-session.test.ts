@@ -45,6 +45,16 @@ function fakeHttp(seen: SeenCall[], failure?: Error): PublicHttp {
         headers: { location: 'https://cdn.test/file.bin', 'content-range': 'bytes 0-0/100', 'accept-ranges': 'bytes' },
       };
     },
+    getHead: async (url, _signal, options) => {
+      record('HEAD', url, options?.headers, options?.maxBytes);
+      return {
+        finalUrl: 'https://cdn.test/file.bin',
+        status: 206,
+        contentType: 'application/octet-stream',
+        setCookie: ['cdn_sid=abc; Path=/'],
+        headers: { location: 'https://cdn.test/file.bin', 'content-range': 'bytes 0-0/100', 'accept-ranges': 'bytes' },
+      };
+    },
     postForm: async (url, fields, _signal, options) => { record('POST', url, options?.headers); return { finalUrl: url, data: { fields }, status: 200 }; },
     postJson: async (url, body, _signal, options) => { record('POST', url, options?.headers); return { finalUrl: url, data: { body }, status: 200 }; },
     getStream: async (url) => ({ finalUrl: url, status: 200, contentType: '', contentLength: 0, body: (await import('node:stream')).Readable.from([]), headers: {} }),
@@ -174,6 +184,20 @@ test('caps the body of a raw request', async () => {
   assert.equal(seen[0].maxBytes, 64 * 1024);
   await session.raw('https://115.com/api/2', undefined, 1024 * 1024);
   assert.equal(seen[1].maxBytes, 1024 * 1024);
+});
+
+test('reads the response head without a body of its own', async () => {
+  const seen: SeenCall[] = [];
+  const session = new NetdiskSession({ http: fakeHttp(seen), signal: new AbortController().signal });
+  session.setCookie('https://115.com/s/abc', 'sid', 'secret');
+  const response = await session.head('https://115.com/api/1');
+  assert.equal(response.finalUrl, 'https://cdn.test/file.bin');
+  assert.equal(response.status, 206);
+  assert.deepEqual(response.setCookie, ['cdn_sid=abc; Path=/']);
+  assert.equal(response.headers['accept-ranges'], 'bytes');
+  // The head carries no body, so it asks for no size limit of its own.
+  assert.equal(seen[0].maxBytes, undefined);
+  assert.equal(seen[0].headers?.Cookie, 'sid=secret');
 });
 
 test('keeps its own range under both spellings of the caller', async () => {

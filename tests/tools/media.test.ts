@@ -29,6 +29,7 @@ function fakeHttp(overrides: Partial<PublicHttp> = {}): PublicHttp {
     getJson: async () => ({ finalUrl: 'https://example.com/', data: {}, status: 200 }),
     getBinary: async () => ({ finalUrl: 'https://example.com/', bytes: new Uint8Array(), contentType: 'application/octet-stream', status: 200 }),
     getRaw: async () => ({ finalUrl: 'https://example.com/', status: 200, contentType: 'text/html', bytes: new Uint8Array(), setCookie: [], headers: {} }),
+    getHead: async () => ({ finalUrl: 'https://example.com/', status: 200, contentType: 'text/html', setCookie: [], headers: {} }),
     postForm: async () => ({ finalUrl: 'https://example.com/', data: {}, status: 200 }),
     postJson: async () => ({ finalUrl: 'https://example.com/', data: {}, status: 200 }),
     getStream: async () => ({ finalUrl: 'https://example.com/', status: 200, contentType: 'application/octet-stream', contentLength: 0, body: Readable.from([]), headers: {} }),
