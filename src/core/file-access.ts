@@ -1,4 +1,4 @@
-import { open, opendir, realpath, lstat, mkdir, writeFile } from 'node:fs/promises';
+import { open as fsOpen, opendir, realpath, lstat, mkdir, writeFile, type FileHandle as FsHandle } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import type { FileAccess, FileEntry, FileWriter } from '../contracts/tool.js';
@@ -34,7 +34,7 @@ export function createFileAccess(root: string, signal: AbortSignal): FileAccess 
   async function readBytes(relative: string, maxBytes: number) {
     const filename = await resolve(relative);
     try {
-      const handle = await open(filename, 'r');
+      const handle = await fsOpen(filename, 'r');
       try {
         const info = await handle.stat();
         if (!info.isFile()) throw new ToolError('INVALID_INPUT', '请选择普通文件。');
@@ -145,6 +145,74 @@ export function createFileWriter(root: string, signal: AbortSignal, maxBytes: nu
         return fileError(error);
       }
       return { relativePath: safePath, bytes: bytes.byteLength };
+    },
+    async open(relativePath, options) {
+      const { absolute, relativePath: safePath } = target(relativePath);
+      if (options?.truncateTo !== undefined && (!Number.isSafeInteger(options.truncateTo) || options.truncateTo < 0)) {
+        throw new ToolError('INVALID_INPUT', '预分配长度无效。');
+      }
+      if ((options?.truncateTo ?? 0) > maxBytes) throw new ToolError('LIMIT_EXCEEDED', '输出文件超过写入大小限制。');
+      const directory = path.dirname(absolute);
+      await mkdir(directory, { recursive: true });
+      const realDirectory = await realpath(directory).catch(() => { throw new ToolError('ACCESS_DENIED', '输出目录不可用。'); });
+      const realRelative = path.relative(root, realDirectory);
+      if (realRelative.startsWith('..') || path.isAbsolute(realRelative)) throw new ToolError('ACCESS_DENIED', '输出路径必须位于输出目录内。');
+      const existing = await lstat(absolute).catch(() => null);
+      if (existing?.isSymbolicLink()) throw new ToolError('ACCESS_DENIED', '输出目标不能是符号链接或联接点。');
+      if (existing && !options?.overwrite) throw new ToolError('ACCESS_DENIED', '输出目录中已存在同名文件，请更换名称或勾选覆盖。');
+      let handle: FsHandle;
+      try {
+        // An existing file is reopened with r+ so the bytes already on disk
+        // survive; a new one is created exclusively so a file that appears
+        // between the check and the open is never truncated silently.
+        handle = await fsOpen(absolute, existing ? 'r+' : 'wx+', 0o600);
+      } catch (error) {
+        if ((error as { code?: string }).code === 'EEXIST') throw new ToolError('ACCESS_DENIED', '输出目录中已存在同名文件，请更换名称或勾选覆盖。');
+        return fileError(error);
+      }
+      let written = 0;
+      let extent = 0;
+      let closed = false;
+      try {
+        // A resumed file already holds bytes, so the size limit starts from
+        // what is really on disk rather than from this session's writes.
+        extent = (await handle.stat()).size;
+        if (options?.truncateTo !== undefined) {
+          await handle.truncate(options.truncateTo);
+          extent = options.truncateTo;
+        }
+      } catch (error) {
+        await handle.close();
+        return fileError(error);
+      }
+      return {
+        relativePath: safePath,
+        async writeAt(buffer, position) {
+          if (closed) throw new ToolError('ACCESS_DENIED', '文件句柄已关闭。');
+          if (!Number.isSafeInteger(position) || position < 0) throw new ToolError('INVALID_INPUT', '写入位置无效。');
+          // The limit is checked before the write, otherwise the segment that
+          // crosses it is already on disk and the cap means nothing.
+          const end = position + buffer.byteLength;
+          if (Math.max(extent, end) > maxBytes) throw new ToolError('LIMIT_EXCEEDED', '输出文件超过写入大小限制。');
+          const { bytesWritten } = await handle.write(buffer, 0, buffer.byteLength, position);
+          written += bytesWritten;
+          extent = Math.max(extent, end);
+          return bytesWritten;
+        },
+        bytesWritten() { return written; },
+        async truncate(length) {
+          if (closed) throw new ToolError('ACCESS_DENIED', '文件句柄已关闭。');
+          if (!Number.isSafeInteger(length) || length < 0) throw new ToolError('INVALID_INPUT', '预分配长度无效。');
+          if (length > maxBytes) throw new ToolError('LIMIT_EXCEEDED', '输出文件超过写入大小限制。');
+          await handle.truncate(length);
+          extent = length;
+        },
+        async close() {
+          if (closed) return;
+          closed = true;
+          await handle.close();
+        },
+      };
     },
   };
 }

@@ -72,8 +72,19 @@ export interface PublicHttp {
   postJson(url: string, body: unknown, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; data: unknown; status: number }>;
   getStream(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; status: number; contentType: string; contentLength: number | null; body: PublicHttpBody; headers: Record<string, string> }>;
 }
+export interface FileHandle {
+  readonly relativePath: string;
+  /** 在文件的指定偏移写入，返回写入的字节数。 */
+  writeAt(buffer: Uint8Array, position: number): Promise<number>;
+  /** 已写入字节数。 */
+  bytesWritten(): number;
+  /** 预分配到指定长度，不写内容。 */
+  truncate(length: number): Promise<void>;
+  close(): Promise<void>;
+}
 export interface FileWriter {
   write(relativePath: string, bytes: Uint8Array, options?: { overwrite?: boolean }): Promise<{ relativePath: string; bytes: number }>;
+  open(relativePath: string, options?: { overwrite?: boolean; truncateTo?: number }): Promise<FileHandle>;
 }
 export interface EnvironmentReport {
   platform: string;
