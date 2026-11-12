@@ -318,6 +318,50 @@ test('posts json bodies with a json content type', async t => {
   assert.equal(seen.body, JSON.stringify({ id: '42', tags: ['a'] }));
 });
 
+test('drops the credentials of the old host on a redirect to another host', async (t) => {
+  const seen: Array<{ host: string; cookie?: string; authorization?: string }> = [];
+  await transport(t, (req, res) => {
+    seen.push({ host: req.headers.host ?? '', cookie: req.headers.cookie, authorization: req.headers.authorization });
+    if (req.headers.host === 'share.test') {
+      res.writeHead(302, { location: 'http://cdn.test/file.bin' });
+      res.end();
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end('<main>ok</main>');
+  });
+  const result = await createPublicHttp(2_097_152).getHtml('http://share.test/', signal(), {
+    headers: { Cookie: 'sid=secret', Authorization: 'Bearer token' },
+  });
+  assert.equal(result.finalUrl, 'http://cdn.test/file.bin');
+  assert.equal(seen.length, 2);
+  assert.equal(seen[0].cookie, 'sid=secret');
+  assert.equal(seen[0].authorization, 'Bearer token');
+  // The session of the old host must not reach the new one.
+  assert.equal(seen[1].cookie, undefined);
+  assert.equal(seen[1].authorization, undefined);
+});
+
+test('keeps the credentials on a redirect inside the same host', async (t) => {
+  const seen: Array<{ cookie?: string; authorization?: string }> = [];
+  await transport(t, (req, res) => {
+    seen.push({ cookie: req.headers.cookie, authorization: req.headers.authorization });
+    if (req.url === '/start') {
+      res.writeHead(302, { location: '/next' });
+      res.end();
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end('<main>ok</main>');
+  });
+  await createPublicHttp(2_097_152).getHtml('http://share.test/start', signal(), {
+    headers: { Cookie: 'sid=secret', Authorization: 'Bearer token' },
+  });
+  assert.equal(seen.length, 2);
+  assert.equal(seen[1].cookie, 'sid=secret');
+  assert.equal(seen[1].authorization, 'Bearer token');
+});
+
 test('filters request headers against the allowlist', () => {
   const allowed = safeRequestHeaders({ Range: 'bytes=0-3', Authorization: 'Bearer token', 'X-Requested-With': 'XMLHttpRequest' });
   assert.deepEqual(allowed, { range: 'bytes=0-3', authorization: 'Bearer token', 'x-requested-with': 'XMLHttpRequest' });

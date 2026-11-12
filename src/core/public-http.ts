@@ -103,6 +103,20 @@ export function safeRequestHeaders(headers?: Record<string, string>): Record<str
 }
 
 /**
+ * Drops the headers that carry credentials. A redirect to another host must
+ * not hand the session of the old host to the new one.
+ */
+function withoutCredentials(headers?: Record<string, string>): Record<string, string> | undefined {
+  if (!headers) return headers;
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (/^(?:cookie|authorization)$/i.test(key)) continue;
+    result[key] = value;
+  }
+  return result;
+}
+
+/**
  * Counts bytes on the pass-through path so the size limit holds for streamed
  * responses too. The body is never buffered; the limit violation surfaces as a
  * stream error the caller sees while consuming.
@@ -158,6 +172,9 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
     const timeoutMs = options?.timeoutMs ?? 10_000;
     checkAbort(signal);
     let url = validatePublicUrl(value, options?.allowedPorts ?? []);
+    // The headers of the current request. A redirect to another host drops the
+    // credential headers, so the session of the old host stays there.
+    let requestHeaders = options?.headers;
     for (let redirects = 0; ; redirects++) {
       checkAbort(signal);
       const host = hostname(url);
@@ -174,7 +191,7 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
             accept: kind === 'html' ? 'text/html, application/xhtml+xml' : kind === 'json' ? 'application/json' : '*/*',
             'accept-encoding': 'identity',
             ...(options?.contentType ? { 'content-type': options.contentType } : {}),
-            ...safeRequestHeaders(options?.headers),
+            ...safeRequestHeaders(requestHeaders),
           },
           ...(options?.body !== undefined ? { body: options.body } : {}),
         });
@@ -191,7 +208,10 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
             let target: URL;
             try { target = new URL(location, url); }
             catch { throw new ToolError('NETWORK_ERROR', '网页重定向目标无效。'); }
+            const currentHost = hostname(url);
             url = validatePublicUrl(target.href, options?.allowedPorts ?? []);
+            // A redirect to another host must not carry the credentials of the old one.
+            if (hostname(url) !== currentHost) requestHeaders = withoutCredentials(requestHeaders);
             continue;
           }
           if (statusCode < 200 || statusCode >= 300) throw new ToolError('NETWORK_ERROR', '网页服务器未返回成功响应。');
