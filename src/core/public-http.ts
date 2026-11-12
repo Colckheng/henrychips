@@ -2,7 +2,7 @@ import dns, { type LookupAddress } from 'node:dns';
 import { isIP, type LookupFunction } from 'node:net';
 import ipaddr from 'ipaddr.js';
 import { Agent, request } from 'undici';
-import type { PublicHttp, PublicHttpRequest } from '../contracts/tool.js';
+import type { PublicHttp, PublicHttpBody, PublicHttpRequest } from '../contracts/tool.js';
 import { ToolError } from './errors.js';
 
 /** Reject special-use ranges, including IPv4-mapped and transition IPv6. */
@@ -84,7 +84,11 @@ function pinnedLookup(host: string, addresses: LookupAddress[]): LookupFunction 
   };
 }
 
-const allowedHeaders = new Set(['user-agent', 'referer', 'origin', 'accept', 'accept-language', 'cookie', 'content-type']);
+const allowedHeaders = new Set([
+  'user-agent', 'referer', 'origin', 'accept', 'accept-language', 'cookie', 'content-type',
+  'range', 'authorization', 'x-requested-with', 'x-api-version', 'x-device-id',
+  'x-client-type', 'x-app-version', 'x-os-version', 'x-source', 'x-source-version',
+]);
 
 export function safeRequestHeaders(headers?: Record<string, string>): Record<string, string> {
   const result: Record<string, string> = {};
@@ -99,9 +103,31 @@ export function safeRequestHeaders(headers?: Record<string, string>): Record<str
 
 export function createPublicHttp(maxBytes: number): PublicHttp {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new RangeError('maxBytes must be a positive safe integer');
-  type Kind = 'html' | 'json' | 'binary';
-  async function fetchPublic(value: string, signal: AbortSignal, kind: Kind, options?: PublicHttpRequest) {
+  type Kind = 'html' | 'json' | 'binary' | 'stream';
+  type FetchOptions = PublicHttpRequest & { method?: 'GET' | 'POST'; body?: string; contentType?: string };
+  type BufferedResult = {
+    finalUrl: string;
+    status: number;
+    contentType: string;
+    bytes: Buffer;
+    setCookie: string[];
+    headers: Record<string, string>;
+    text?: string;
+    data?: unknown;
+  };
+  type StreamResult = {
+    finalUrl: string;
+    status: number;
+    contentType: string;
+    contentLength: number | null;
+    body: PublicHttpBody;
+    headers: Record<string, string>;
+  };
+  async function fetchPublic(value: string, signal: AbortSignal, kind: 'stream', options?: FetchOptions): Promise<StreamResult>;
+  async function fetchPublic(value: string, signal: AbortSignal, kind: 'html' | 'json' | 'binary', options?: FetchOptions): Promise<BufferedResult>;
+  async function fetchPublic(value: string, signal: AbortSignal, kind: Kind, options?: FetchOptions): Promise<BufferedResult | StreamResult> {
     const limit = options?.maxBytes ?? maxBytes;
+    const timeoutMs = options?.timeoutMs ?? 10_000;
     checkAbort(signal);
     let url = validatePublicUrl(value, options?.allowedPorts ?? []);
     for (let redirects = 0; ; redirects++) {
@@ -109,17 +135,20 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
       const host = hostname(url);
       const addresses = await resolveAddresses(host, signal);
       const agent = new Agent({ connect: { lookup: pinnedLookup(host, addresses), timeout: 10_000 } });
+      let handedOff = false;
       try {
         // undici.request does not follow redirects unless a redirect
         // interceptor is explicitly installed. This agent has none.
         const response = await request(url, {
-          dispatcher: agent, method: 'GET', signal,
-          headersTimeout: 10_000, bodyTimeout: 10_000,
+          dispatcher: agent, method: options?.method ?? 'GET', signal,
+          headersTimeout: timeoutMs, bodyTimeout: timeoutMs,
           headers: {
             accept: kind === 'html' ? 'text/html, application/xhtml+xml' : kind === 'json' ? 'application/json' : '*/*',
             'accept-encoding': 'identity',
+            ...(options?.contentType ? { 'content-type': options.contentType } : {}),
             ...safeRequestHeaders(options?.headers),
           },
+          ...(options?.body !== undefined ? { body: options.body } : {}),
         });
         const { statusCode, headers, body } = response;
         // Errors from an intentionally discarded redirect/oversized body must
@@ -150,6 +179,15 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
           if (encoding && encoding !== 'identity') throw new ToolError('UNSUPPORTED_FORMAT', '网页未按请求返回未压缩的内容。');
           const declared = headers['content-length'];
           if (declared !== undefined && Number(declared) > limit) throw new ToolError('LIMIT_EXCEEDED', '网页超过读取大小限制。');
+          const responseHeaders = Object.fromEntries(Object.entries(headers).map(([key, value]) => [key, Array.isArray(value) ? value.join(', ') : String(value)]));
+          if (kind === 'stream') {
+            const contentLength = declared === undefined ? null : Number(declared);
+            // The caller owns the body now, so the agent must stay alive until
+            // the stream ends. Destroying it here would cut the download off.
+            body.once('close', () => { void agent.destroy(); });
+            handedOff = true;
+            return { finalUrl: url.href, status: statusCode, contentType, contentLength, body, headers: responseHeaders };
+          }
           const chunks: Buffer[] = [];
           let total = 0;
           for await (const chunk of body) {
@@ -167,25 +205,29 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
             let decoder: TextDecoder;
             try { decoder = new TextDecoder(charset); }
             catch { throw new ToolError('UNSUPPORTED_FORMAT', '网页使用了不支持的字符编码。'); }
-            return { finalUrl: url.href, status: statusCode, contentType, bytes: buffer, setCookie, text: decoder.decode(buffer) };
+            return { finalUrl: url.href, status: statusCode, contentType, bytes: buffer, setCookie, headers: responseHeaders, text: decoder.decode(buffer) };
           }
           if (kind === 'json') {
-            try { return { finalUrl: url.href, status: statusCode, contentType, bytes: buffer, setCookie, data: JSON.parse(buffer.toString('utf8')) as unknown }; }
+            try { return { finalUrl: url.href, status: statusCode, contentType, bytes: buffer, setCookie, headers: responseHeaders, data: JSON.parse(buffer.toString('utf8')) as unknown }; }
             catch { throw new ToolError('UNSUPPORTED_FORMAT', '该地址返回的内容不是有效 JSON。'); }
           }
-          return { finalUrl: url.href, status: statusCode, contentType, bytes: buffer, setCookie };
+          return { finalUrl: url.href, status: statusCode, contentType, bytes: buffer, setCookie, headers: responseHeaders };
         } finally {
-          if (!body.destroyed) body.destroy();
+          if (!handedOff) {
+            if (!body.destroyed) body.destroy();
+            await agent.destroy();
+          }
         }
-      } finally {
-        await agent.destroy();
+      } catch (error) {
+        if (!handedOff) await agent.destroy();
+        throw error;
       }
     }
   }
   return {
-    async getHtml(value, signal) {
+    async getHtml(value, signal, options) {
       try {
-        const result = await fetchPublic(value, signal, 'html');
+        const result = await fetchPublic(value, signal, 'html', options);
         return { finalUrl: result.finalUrl, html: result.text ?? '', status: result.status };
       } catch (error) {
         checkAbort(signal);
@@ -216,7 +258,39 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
     async getRaw(value, signal, options) {
       try {
         const result = await fetchPublic(value, signal, 'binary', options);
-        return { finalUrl: result.finalUrl, status: result.status, contentType: result.contentType, bytes: new Uint8Array(result.bytes), setCookie: result.setCookie };
+        return { finalUrl: result.finalUrl, status: result.status, contentType: result.contentType, bytes: new Uint8Array(result.bytes), setCookie: result.setCookie, headers: result.headers };
+      } catch (error) {
+        checkAbort(signal);
+        if (error instanceof ToolError) throw error;
+        throw new ToolError('NETWORK_ERROR', '无法读取远程资源，请检查地址或稍后重试。');
+      }
+    },
+    async postForm(url, fields, signal, options) {
+      try {
+        const body = new URLSearchParams(fields).toString();
+        const result = await fetchPublic(url, signal, 'json', { ...options, method: 'POST', body, contentType: 'application/x-www-form-urlencoded' });
+        return { finalUrl: result.finalUrl, data: result.data, status: result.status };
+      } catch (error) {
+        checkAbort(signal);
+        if (error instanceof ToolError) throw error;
+        throw new ToolError('NETWORK_ERROR', '无法提交表单请求，请检查地址或稍后重试。');
+      }
+    },
+    async postJson(url, body, signal, options) {
+      try {
+        const result = await fetchPublic(url, signal, 'json', {
+          ...options, method: 'POST', body: JSON.stringify(body), contentType: 'application/json',
+        });
+        return { finalUrl: result.finalUrl, data: result.data, status: result.status };
+      } catch (error) {
+        checkAbort(signal);
+        if (error instanceof ToolError) throw error;
+        throw new ToolError('NETWORK_ERROR', '无法提交接口请求，请检查地址或稍后重试。');
+      }
+    },
+    async getStream(url, signal, options) {
+      try {
+        return await fetchPublic(url, signal, 'stream', options);
       } catch (error) {
         checkAbort(signal);
         if (error instanceof ToolError) throw error;

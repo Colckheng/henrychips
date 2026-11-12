@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import mammoth from 'mammoth';
 import { z } from 'zod';
 import type { PublicHttp, ToolContext } from '../../src/contracts/tool.js';
@@ -27,7 +28,10 @@ function fakeHttp(overrides: Partial<PublicHttp> = {}): PublicHttp {
     getHtml: async () => ({ finalUrl: 'https://example.com/', html: '', status: 200 }),
     getJson: async () => ({ finalUrl: 'https://example.com/', data: {}, status: 200 }),
     getBinary: async () => ({ finalUrl: 'https://example.com/', bytes: new Uint8Array(), contentType: 'application/octet-stream', status: 200 }),
-    getRaw: async () => ({ finalUrl: 'https://example.com/', status: 200, contentType: 'text/html', bytes: new Uint8Array(), setCookie: [] }),
+    getRaw: async () => ({ finalUrl: 'https://example.com/', status: 200, contentType: 'text/html', bytes: new Uint8Array(), setCookie: [], headers: {} }),
+    postForm: async () => ({ finalUrl: 'https://example.com/', data: {}, status: 200 }),
+    postJson: async () => ({ finalUrl: 'https://example.com/', data: {}, status: 200 }),
+    getStream: async () => ({ finalUrl: 'https://example.com/', status: 200, contentType: 'application/octet-stream', contentLength: 0, body: Readable.from([]) }),
     ...overrides,
   };
 }
@@ -104,7 +108,7 @@ test('document conversion refuses unsupported targets for images', async () => {
 
 test('Bilibili extraction reads the video metadata and stream from the API', async () => {
   const http = fakeHttp({
-    getRaw: async () => ({ finalUrl: 'https://api.bilibili.com/x/frontend/finger/spi', status: 200, contentType: 'application/json', bytes: new Uint8Array(), setCookie: ['buvid3=abc; Path=/'] }),
+    getRaw: async () => ({ finalUrl: 'https://api.bilibili.com/x/frontend/finger/spi', status: 200, contentType: 'application/json', bytes: new Uint8Array(), setCookie: ['buvid3=abc; Path=/'], headers: {} }),
     getJson: async (url) => {
       if (url.includes('/view')) return { finalUrl: url, status: 200, data: { code: 0, data: { bvid: 'BV1ugxq6HEfH', title: '示例标题', desc: '简介', duration: 126, owner: { name: '作者' }, pic: 'https://cover', pages: [{ cid: 42, page: 1 }] } } };
       return { finalUrl: url, status: 200, data: { code: 0, data: { quality: 64, timelength: 126000, durl: [{ url: 'https://cdn/video.mp4', size: 1024 }] } } };
@@ -129,7 +133,7 @@ test('Bilibili audio separation exposes the DASH audio stream and saves it besid
   const directory = await mkdtemp(path.join(tmpdir(), 'workstation-bili-audio-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const http = fakeHttp({
-    getRaw: async () => ({ finalUrl: 'https://api.bilibili.com/x/frontend/finger/spi', status: 200, contentType: 'application/json', bytes: new Uint8Array(), setCookie: ['buvid3=abc; Path=/'] }),
+    getRaw: async () => ({ finalUrl: 'https://api.bilibili.com/x/frontend/finger/spi', status: 200, contentType: 'application/json', bytes: new Uint8Array(), setCookie: ['buvid3=abc; Path=/'], headers: {} }),
     getJson: async (url) => {
       if (url.includes('/view')) return { finalUrl: url, status: 200, data: { code: 0, data: { bvid: 'BV1ugxq6HEfH', title: '示例', duration: 126, owner: { name: '作者' }, pic: 'https://cover', pages: [{ cid: 42, page: 1 }] } } };
       if (url.includes('fnval=0')) return { finalUrl: url, status: 200, data: { code: 0, data: { quality: 64, timelength: 126000, durl: [{ url: 'https://cdn/video.mp4', size: 1024 }] } } };
@@ -267,7 +271,7 @@ test('the Douyin watermark switch picks the clean or the watermarked source', ()
 test('the Bilibili watermark switch prefers the original DASH stream', async () => {
   const requested: string[] = [];
   const http = fakeHttp({
-    getRaw: async () => ({ finalUrl: 'https://api.bilibili.com/x/frontend/finger/spi', status: 200, contentType: 'application/json', bytes: new Uint8Array(), setCookie: ['buvid3=abc; Path=/'] }),
+    getRaw: async () => ({ finalUrl: 'https://api.bilibili.com/x/frontend/finger/spi', status: 200, contentType: 'application/json', bytes: new Uint8Array(), setCookie: ['buvid3=abc; Path=/'], headers: {} }),
     getJson: async (url) => {
       requested.push(url);
       if (url.includes('/view')) return { finalUrl: url, status: 200, data: { code: 0, data: { bvid: 'BV1ugxq6HEfH', title: '示例', duration: 126, owner: { name: '作者' }, pic: 'https://cover', pages: [{ cid: 42, page: 1 }] } } };

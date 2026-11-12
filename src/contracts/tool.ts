@@ -47,6 +47,8 @@ export interface PublicHttpRequest {
   maxBytes?: number;
   /** Extra ports a trusted media CDN may use. Private addresses stay blocked. */
   allowedPorts?: number[];
+  /** 流式读取时「多久没有数据算超时」的容忍毫秒数。默认 10000。 */
+  timeoutMs?: number;
 }
 export interface PublicHttpResponse {
   finalUrl: string;
@@ -54,12 +56,21 @@ export interface PublicHttpResponse {
   contentType: string;
   bytes: Uint8Array;
   setCookie: string[];
+  headers: Record<string, string>;
+}
+/** 契约同时被浏览器端编译，因此用结构化类型描述流式响应体，不依赖 Node 类型。 */
+export interface PublicHttpBody extends AsyncIterable<Uint8Array> {
+  resume(): void;
+  destroy(error?: Error): void;
 }
 export interface PublicHttp {
-  getHtml(url: string, signal: AbortSignal): Promise<{ finalUrl: string; html: string; status: number }>;
+  getHtml(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; html: string; status: number }>;
   getJson(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; data: unknown; status: number }>;
   getBinary(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; bytes: Uint8Array; contentType: string; status: number }>;
   getRaw(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<PublicHttpResponse>;
+  postForm(url: string, fields: Record<string, string>, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; data: unknown; status: number }>;
+  postJson(url: string, body: unknown, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; data: unknown; status: number }>;
+  getStream(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; status: number; contentType: string; contentLength: number | null; body: PublicHttpBody }>;
 }
 export interface FileWriter {
   write(relativePath: string, bytes: Uint8Array, options?: { overwrite?: boolean }): Promise<{ relativePath: string; bytes: number }>;

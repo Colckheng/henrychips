@@ -191,3 +191,45 @@ test('cancellation does not wait for a stalled resolver', async (t) => {
   controller.abort();
   await assert.rejects(pending, { code: 'CANCELLED' });
 });
+
+test('posts form bodies and returns parsed json', async t => {
+  const { connected } = await transport(t, (request, response) => {
+    let body = '';
+    request.on('data', chunk => { body += chunk; });
+    request.on('end', () => {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ received: body, method: request.method }));
+    });
+  });
+  const http = createPublicHttp(2_097_152);
+  const result = await http.postForm('http://public.test/api', { action: 'downprocess', sign: 'abc' }, new AbortController().signal);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.data, { received: 'action=downprocess&sign=abc', method: 'POST' });
+  assert.equal(connected.length, 1);
+});
+
+test('keeps the range header that a segmented download needs', async t => {
+  const seen: string[] = [];
+  await transport(t, (request, response) => {
+    seen.push(request.headers.range ?? '');
+    response.writeHead(206, { 'Content-Type': 'application/octet-stream', 'Content-Range': 'bytes 0-3/100' });
+    response.end('abcd');
+  });
+  const http = createPublicHttp(2_097_152);
+  const result = await http.getStream('http://public.test/file.bin', new AbortController().signal, { headers: { Range: 'bytes=0-3' } });
+  result.body.resume();
+  assert.equal(seen[0], 'bytes=0-3');
+});
+
+test('streams a response body instead of buffering it', async t => {
+  await transport(t, (_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': '6' });
+    response.end('abcdef');
+  });
+  const http = createPublicHttp(2_097_152);
+  const result = await http.getStream('http://public.test/file.bin', new AbortController().signal);
+  assert.equal(result.contentLength, 6);
+  const chunks: Buffer[] = [];
+  for await (const chunk of result.body) chunks.push(Buffer.from(chunk));
+  assert.equal(Buffer.concat(chunks).toString(), 'abcdef');
+});
