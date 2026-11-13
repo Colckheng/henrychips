@@ -18,7 +18,10 @@ export type CredentialStore = Record<string, PlatformCredential>;
 const credentialFields = new Map<string, readonly (keyof PlatformCredential)[]>([
   ['baidu', ['bduss']],
   ['pan123', ['username', 'password']],
-  ['xunlei', ['username', 'password']],
+  // The first sign in of the platform always asks for a text message code,
+  // so an account and a password cannot be turned into a token here. The
+  // token of a session that was signed in once is what the adapter needs.
+  ['xunlei', ['token']],
 ]);
 
 /** A usage error has to name the platforms that work, so they are listed. */

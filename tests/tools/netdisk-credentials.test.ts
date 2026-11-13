@@ -53,7 +53,7 @@ test('lets an environment variable win over the stored credential', async t => {
 test('clears one platform without touching the others', async t => {
   const directory = await mkdtemp(path.join(tmpdir(), 'workstation-credentials-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  writeCredentials(directory, { baidu: { bduss: 'a' }, xunlei: { username: 'u', password: 'p' } });
+  writeCredentials(directory, { baidu: { bduss: 'a' }, xunlei: { token: 't' } });
   assert.equal(clearCredential(directory, 'baidu'), true);
   assert.deepEqual(listCredentialPlatforms(directory), ['xunlei']);
 });
@@ -68,9 +68,9 @@ test('reads a corrupted file as an empty store instead of crashing', async t => 
 test('writes the credential file with the values it was given', async t => {
   const directory = await mkdtemp(path.join(tmpdir(), 'workstation-credentials-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  writeCredentials(directory, { xunlei: { username: 'u', password: 'p' } });
+  writeCredentials(directory, { xunlei: { token: 't' } });
   const file = credentialFilePath(directory);
-  assert.equal(await readFile(file, 'utf8'), `${JSON.stringify({ xunlei: { username: 'u', password: 'p' } }, null, 2)}\n`);
+  assert.equal(await readFile(file, 'utf8'), `${JSON.stringify({ xunlei: { token: 't' } }, null, 2)}\n`);
   const info = await stat(file);
   assert.ok(info.isFile());
   // The file holds a password, so only its owner may read it. Windows keeps
@@ -81,10 +81,10 @@ test('writes the credential file with the values it was given', async t => {
 test('lets the environment override one field and leaves the other one alone', async t => {
   const directory = await mkdtemp(path.join(tmpdir(), 'workstation-credentials-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  writeCredentials(directory, { xunlei: { username: 'file-user', password: 'file-pass' } });
-  process.env.HENRY_NETDISK_XUNLEI_PASSWORD = 'env-pass';
-  t.after(() => { delete process.env.HENRY_NETDISK_XUNLEI_PASSWORD; });
-  const credential = resolveCredential('xunlei', directory);
+  writeCredentials(directory, { pan123: { username: 'file-user', password: 'file-pass' } });
+  process.env.HENRY_NETDISK_PAN123_PASSWORD = 'env-pass';
+  t.after(() => { delete process.env.HENRY_NETDISK_PAN123_PASSWORD; });
+  const credential = resolveCredential('pan123', directory);
   assert.equal(credential?.username, 'file-user');
   assert.equal(credential?.password, 'env-pass');
 });
@@ -94,8 +94,9 @@ test('drops the entries the file cannot describe', async t => {
   t.after(() => rm(directory, { recursive: true, force: true }));
   await writeFile(credentialFilePath(directory), JSON.stringify(['baidu', 'xunlei']), 'utf8');
   assert.deepEqual(readCredentials(directory), {});
-  await writeFile(credentialFilePath(directory), JSON.stringify({ baidu: 'token', xunlei: { username: 'u', password: 7 } }), 'utf8');
-  assert.deepEqual(readCredentials(directory), { xunlei: { username: 'u' } });
+  await writeFile(credentialFilePath(directory), JSON.stringify({ baidu: 'token', xunlei: { token: 7 } }), 'utf8');
+  // A field that is not a string cannot be used, so the entry is dropped.
+  assert.deepEqual(readCredentials(directory), {});
 });
 
 test('says a platform has nothing to clear when it was never stored', async t => {

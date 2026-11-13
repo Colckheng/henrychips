@@ -69,6 +69,8 @@ export interface PlatformCredential {
   bduss?: string;
   username?: string;
   password?: string;
+  /** An access token of a platform that cannot be signed in to automatically. */
+  token?: string;
 }
 
 /** What an adapter gets to work with. */

@@ -149,10 +149,10 @@ test('CLI binds every value flag to the line at its own position', async t => {
   assert.deepEqual(stored, { pan123: { password: 'line-one', username: 'line-two' } });
 
   // The other order swaps the lines, so the values must not be swapped.
-  const reversed = await runCli(['credentials', 'set', 'xunlei', '--username-stdin', '--password-stdin'], configPath, 'line-one\nline-two\n');
+  const reversed = await runCli(['credentials', 'set', 'pan123', '--username-stdin', '--password-stdin'], configPath, 'line-one\nline-two\n');
   assert.equal(reversed.code, 0, reversed.stderr);
   const reversedStored = JSON.parse(await readFile(credentialFile, 'utf8'));
-  assert.deepEqual(reversedStored.xunlei, { username: 'line-one', password: 'line-two' });
+  assert.deepEqual(reversedStored.pan123, { username: 'line-one', password: 'line-two' });
 
   // One value flag takes one line, so a file with two lines has a surplus.
   const surplus = await runCli(['credentials', 'set', 'baidu', '--bduss-stdin'], configPath, 'first\nsecond\n');

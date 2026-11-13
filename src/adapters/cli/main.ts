@@ -11,7 +11,7 @@ inspect <tool> [--json]
 run <tool> --input <json>
 run <tool> --input-file <path>
 credentials list
-credentials set <platform> [--bduss-stdin] [--username-stdin] [--password-stdin]
+credentials set <platform> [--bduss-stdin] [--username-stdin] [--password-stdin] [--token-stdin]
 credentials clear <platform>
 
 --config <absolute-path> 指定配置文件
@@ -33,12 +33,13 @@ const stdinFlags = [
   { flag: 'bduss-stdin', field: 'bduss' },
   { flag: 'username-stdin', field: 'username' },
   { flag: 'password-stdin', field: 'password' },
+  { flag: 'token-stdin', field: 'token' },
 ] as const;
 
 type StdinFlag = (typeof stdinFlags)[number];
 
 /** The flags that were removed, so a stale command line gets a clear hint. */
-const removedFlags = ['--bduss', '--username', '--password'];
+const removedFlags = ['--bduss', '--username', '--password', '--token'];
 /** A removed flag is matched as a whole word, so "--username-stdin" is not one. */
 const removedFlagPatterns = removedFlags.map(flag => new RegExp(`${flag}(?![-\\w])`));
 
@@ -84,7 +85,7 @@ function parseCliArgs() {
     return parseArgs({
       allowPositionals: true,
       tokens: true,
-      options: { config: { type: 'string' }, json: { type: 'boolean' }, input: { type: 'string' }, 'input-file': { type: 'string' }, 'bduss-stdin': { type: 'boolean' }, 'username-stdin': { type: 'boolean' }, 'password-stdin': { type: 'boolean' }, help: { type: 'boolean', short: 'h' } },
+      options: { config: { type: 'string' }, json: { type: 'boolean' }, input: { type: 'string' }, 'input-file': { type: 'string' }, 'bduss-stdin': { type: 'boolean' }, 'username-stdin': { type: 'boolean' }, 'password-stdin': { type: 'boolean' }, 'token-stdin': { type: 'boolean' }, help: { type: 'boolean', short: 'h' } },
     });
   } catch (error) {
     // The message of the parser names the option, never its value.
