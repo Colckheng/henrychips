@@ -17,6 +17,11 @@ export interface ParsedShare {
 /** One entry of a share: a file or a folder inside it. */
 export interface NetdiskFile {
   id: string;
+  /**
+   * The path of the entry inside the share. It is the readable relative
+   * path of the entry, so a user can read it, paste it into the tool and
+   * find the entry again.
+   */
   path: string;
   name: string;
   sizeBytes: number | null;
@@ -25,7 +30,7 @@ export interface NetdiskFile {
   /**
    * The signed address of the member, when the platform hands one out. The
    * address is what the download is started from, so it is kept apart from
-   * the identity of the member.
+   * the path the user reads.
    */
   fidToken?: string;
 }
@@ -80,6 +85,11 @@ export interface AdapterContext {
 /**
  * The contract every platform speaks. The adapter knows the protocol of its
  * platform only; the session holds the cookies and the pacing.
+ *
+ * The message of an error an adapter throws reaches the caller, so it must
+ * not carry a credential of the account. A platform hands out its own token
+ * in the body of its answers, so the message must not quote that body
+ * either.
  */
 export interface NetdiskAdapter {
   platform: NetdiskPlatform;

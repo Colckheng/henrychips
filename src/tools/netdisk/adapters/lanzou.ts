@@ -196,8 +196,10 @@ export const lanzouAdapter: LanzouAdapter = {
     const shareId = shareIdOf(url);
     const singleFile = isFolder ? null : {
       id: shareId,
-      path: shareId,
-      name: title,
+      // The path of a member is the name the user reads, so the signed
+      // address of the platform stays out of it.
+      path: title || shareId,
+      name: title || shareId,
       sizeBytes: sizeText ? this.parseDisplaySize(`${sizeText[1]} ${sizeText[2]}`) : null,
       isDirectory: false,
     };
@@ -254,8 +256,10 @@ export const lanzouAdapter: LanzouAdapter = {
     const page = await this.fetchSharePage(context);
     // A member of a folder share carries the download parameters in its own
     // address, so the member page has to be read before the parameters can be
-    // found. The address is the signed one the platform hands out.
-    const address = file.fidToken ?? file.path;
+    // found. The address is the signed one the platform hands out, and it
+    // travels in its own field, because the path of the member is the name
+    // the user reads.
+    const address = file.fidToken ?? file.id;
     const member = page.isFolder ? `${page.baseUrl}/${address}` : null;
     let referer = member ?? context.shareUrl;
     let html = member ? await this.fetchPage(context, member, referer) : page.html;
@@ -359,10 +363,18 @@ export const lanzouAdapter: LanzouAdapter = {
         if (!id || seen.has(id)) continue;
         seen.add(id);
         const name = item.name_all || item.name || id;
+        const isDirectory = item.isfolder === '1' || item.is_dir === '1';
         files.push({
-          id, path: address, fidToken: item.fidToken || undefined, name,
+          id,
+          // The path is the name the user reads, so it can be pasted into the
+          // tool again; a folder carries the separator of its children.
+          path: isDirectory ? `${name}/` : name,
+          // The address the download is started from is kept apart from the
+          // path, because the path is read by the user and the address is not.
+          fidToken: address,
+          name,
           sizeBytes: this.parseDisplaySize(item.size ?? '0') || null,
-          isDirectory: item.isfolder === '1' || item.is_dir === '1',
+          isDirectory,
           modifiedAt: item.time ?? undefined,
         });
         added++;

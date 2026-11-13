@@ -221,15 +221,18 @@ test('pages through a folder share and keeps the address of every member', async
   const share = await lanzouAdapter.list(contextOf(http));
   assert.equal(share.title, '文件夹');
   assert.equal(share.files.length, 2);
+  // The path of a member is the name the user reads, and the signed address
+  // travels in its own field.
   assert.deepEqual(share.files[0], {
-    id: 'abc', path: 'abc?file=999', fidToken: 'abc?file=999', name: 'movie.mp4',
+    id: 'abc', path: 'movie.mp4', fidToken: 'abc?file=999', name: 'movie.mp4',
     sizeBytes: 1572864, isDirectory: false, modifiedAt: '2024-01-01 10:00',
   });
   assert.equal(share.files[1].isDirectory, true);
   assert.equal(share.files[1].sizeBytes, 800);
   // A member without an address of its own falls back to its identity.
-  assert.equal(share.files[1].path, 'def');
-  assert.equal(share.files[1].fidToken, undefined);
+  assert.equal(share.files[1].fidToken, 'def');
+  assert.equal(share.files[1].path, 'notes.txt/');
+  assert.equal(share.files[1].name, 'notes.txt');
 });
 
 test('reports a folder page whose shape the adapter cannot read', async () => {
@@ -294,7 +297,7 @@ test('takes the download endpoint and the keys of the page of the platform', asy
   assert.equal(link.url, 'https://developer4.lanrar.com/file/abc123');
   assert.equal(link.rangeSupported, true);
   assert.deepEqual(link.source, {
-    platform: 'lanzou', shareUrl: SHARE_URL, code: null, filePath: 'iXnuF4c8sqmb', fileId: '6513996',
+    platform: 'lanzou', shareUrl: SHARE_URL, code: null, filePath: 'demo.txt', fileId: '6513996',
   });
   assert.equal(link.name, 'demo.txt');
   // The headers belong to the node that serves the file.
