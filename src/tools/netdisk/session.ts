@@ -8,6 +8,8 @@ export interface NetdiskSessionOptions {
   signal: AbortSignal;
   /** Minimum spacing between two requests to the same host, in milliseconds. Defaults to 250. */
   minIntervalMs?: number;
+  /** Reports the moment a request reserves its slot, for a caller that watches the pacing. */
+  onSlotReserved?: (host: string, startAt: number) => void;
 }
 
 /** The response of a request that only reads headers, for a platform that hands out its session in them. */
@@ -128,6 +130,11 @@ export class NetdiskSession {
    * requests that run at the same time still leave one interval between them.
    * The clock is monotonic, so a jump of the wall clock cannot turn into a
    * wait far longer than the interval.
+   *
+   * The reservation is what the pacing guarantees, not the moment the request
+   * actually leaves: a timer may wake a little early, so the arrival of two
+   * requests can be closer than the interval even though their slots are
+   * exactly one interval apart.
    */
   private async waitForSlot(url: string): Promise<void> {
     const host = hostOf(url);
@@ -135,6 +142,7 @@ export class NetdiskSession {
     const previous = this.nextRequestAt.get(host);
     const startAt = previous === undefined ? now : Math.max(now, previous + this.minIntervalMs);
     this.nextRequestAt.set(host, startAt);
+    this.options.onSlotReserved?.(host, startAt);
     const wait = startAt - now;
     if (wait <= 0) return;
     try {

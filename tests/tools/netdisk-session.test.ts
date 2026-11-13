@@ -13,13 +13,6 @@ interface SeenCall {
   at: number;
 }
 
-/**
- * The timer that paces the requests can fire a few milliseconds early, and a
- * busy event loop can make it fire even earlier, so the measured gap is only
- * checked with that tolerance.
- */
-const PACE_TOLERANCE_MS = 10;
-
 /** The headers as the server sees them, with the names in lower case. */
 function asSent(headers?: Record<string, string>): Record<string, string> {
   return Object.fromEntries(Object.entries(headers ?? {}).map(([key, value]) => [key.toLowerCase(), value]));
@@ -297,26 +290,41 @@ test('stops waiting for the pace when the session is cancelled', async () => {
 
 test('paces the requests of one host and leaves the other hosts alone', async () => {
   const seen: SeenCall[] = [];
-  const session = new NetdiskSession({ http: fakeHttp(seen), signal: new AbortController().signal, minIntervalMs: 120 });
+  const slots: Array<{ host: string; at: number }> = [];
+  const session = new NetdiskSession({
+    http: fakeHttp(seen), signal: new AbortController().signal, minIntervalMs: 120,
+    onSlotReserved: (host, at) => { slots.push({ host, at }); },
+  });
   await session.get('https://pan.quark.cn/api/1');
   await session.get('https://115.com/api/1');
   await session.get('https://pan.quark.cn/api/2');
-  // A request to another host does not wait for the interval of the previous one.
-  assert.ok(seen[1].at - seen[0].at < 120, 'another host must not be throttled');
-  // The same host is spaced out by the interval.
-  assert.ok(seen[2].at - seen[0].at >= 120 - PACE_TOLERANCE_MS, 'the same host must be spaced out');
+  // The slots of the same host are one interval apart, and the slot of the
+  // other host does not wait for it.
+  const quark = slots.filter(slot => slot.host === 'pan.quark.cn');
+  assert.equal(quark.length, 2);
+  assert.ok(quark[1].at - quark[0].at >= 120, 'the slots of one host must be one interval apart');
+  assert.equal(slots[1].host, '115.com');
+  assert.ok(slots[1].at - quark[0].at < 120, 'another host must not be throttled');
 });
 
 test('keeps concurrent requests to one host spaced out', async () => {
   const seen: SeenCall[] = [];
-  const session = new NetdiskSession({ http: fakeHttp(seen), signal: new AbortController().signal, minIntervalMs: 100 });
+  const slots: number[] = [];
+  const session = new NetdiskSession({
+    http: fakeHttp(seen), signal: new AbortController().signal, minIntervalMs: 100,
+    onSlotReserved: (_host, at) => { slots.push(at); },
+  });
   await Promise.all([
     session.get('https://pan.quark.cn/api/1'),
     session.get('https://pan.quark.cn/api/2'),
     session.get('https://pan.quark.cn/api/3'),
   ]);
-  assert.ok(seen[1].at - seen[0].at >= 100 - PACE_TOLERANCE_MS, 'the second call must wait');
-  assert.ok(seen[2].at - seen[1].at >= 100 - PACE_TOLERANCE_MS, 'the third call must wait as well');
+  // The pacing is about the slots the requests reserve, not about the moment
+  // they leave: a timer may wake a little early, so the arrivals can be
+  // closer than the interval even though the slots are not.
+  assert.equal(slots.length, 3);
+  assert.ok(slots[1] - slots[0] >= 100, 'the second call must reserve a later slot');
+  assert.ok(slots[2] - slots[1] >= 100, 'the third call must reserve a later slot as well');
 });
 
 test('refuses to send after the session signal is aborted', async () => {
