@@ -564,6 +564,23 @@ test('fails a compressed read that is cancelled instead of waiting for the rest'
   await assert.rejects(pending, { code: 'CANCELLED' });
 });
 
+test('lets every header of the netdisk adapters through', () => {
+  // A header that the allowlist drops never reaches the platform, so a
+  // signature or a flag that the platform checks would be missing and the
+  // request would be refused for the wrong reason.
+  const netdiskHeaders = {
+    'User-Agent': 'ua', Referer: 'r', Origin: 'o', Accept: 'a', 'Content-Type': 'ct',
+    Cookie: 'c', Authorization: 'au', Range: 'bytes=0-1', 'X-Requested-With': 'x',
+    'X-Device-Id': 'd', 'X-Client-Version': 'v', platform: 'p', 'app-version': 'av',
+    'auth-key': 'ak', 'auth-value': 'av2', 'mcloud-sign': 'ms', 'hcy-cool-flag': '1',
+    'x-deviceinfo': 'di', 'x-huawei-channelsrc': 'hs', 'x-mm-source': 'ms2',
+  };
+  const allowed = safeRequestHeaders(netdiskHeaders);
+  for (const name of Object.keys(netdiskHeaders)) {
+    assert.equal(allowed[name.toLowerCase()], netdiskHeaders[name as keyof typeof netdiskHeaders], `the header ${name} must reach the platform`);
+  }
+});
+
 test('filters request headers against the allowlist', () => {
   const allowed = safeRequestHeaders({ Range: 'bytes=0-3', Authorization: 'Bearer token', 'X-Requested-With': 'XMLHttpRequest' });
   assert.deepEqual(allowed, { range: 'bytes=0-3', authorization: 'Bearer token', 'x-requested-with': 'XMLHttpRequest' });

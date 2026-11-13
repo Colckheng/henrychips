@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomInt } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 import { ToolError } from '../../../core/errors.js';
 import type { AdapterContext, NetdiskAdapter, NetdiskFile, NetdiskLink, NetdiskShare } from '../types.js';
@@ -24,7 +24,22 @@ export type C139Adapter = NetdiskAdapter & {
   decryptBody(body: string): string;
   /** Reads the entries of a share, folders and files together. */
   parseEntries(data: unknown): NetdiskFile[];
+  /** Signs a request the way the gateway of the platform expects it. */
+  signHeader(body: string, timestamp?: string, random?: string): string;
 };
+
+/**
+ * The signature of the gateway: the body is percent-encoded, its characters
+ * are sorted, the result is base64 of that, and three digests of it are
+ * combined into one.
+ */
+function calSign(bodyJson: string, timestamp: string, random: string): string {
+  const encoded = encodeURIComponent(bodyJson);
+  const sorted = [...encoded].sort().join('');
+  const base64 = Buffer.from(sorted, 'utf8').toString('base64');
+  const md5 = (value: string) => createHash('md5').update(value, 'utf8').digest('hex');
+  return md5(md5(base64) + md5(`${timestamp}:${random}`)).toUpperCase();
+}
 
 /** Encrypts the body of a share request: AES-CBC with the iv in front. */
 function encrypt(plaintext: string): string {
@@ -60,6 +75,14 @@ export const c139Adapter: C139Adapter = {
     return decrypt(body);
   },
 
+  signHeader(body, timestamp, random) {
+    // The gateway checks the moment of the request, so it has to be the
+    // moment of the request and not the moment of the answer.
+    const stamp = timestamp ?? new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' });
+    const salt = random ?? Array.from({ length: 16 }, () => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[randomInt(0, 62)]).join('');
+    return `${stamp},${salt},${calSign(body, stamp, salt)}`;
+  },
+
   parseEntries(data) {
     if (!data || typeof data !== 'object') return [];
     const root = data as Record<string, unknown>;
@@ -81,13 +104,19 @@ export const c139Adapter: C139Adapter = {
       if (!id) continue;
       const name = typeof entry.coName === 'string' ? entry.coName : id;
       const size = Number(entry.coSize ?? 0);
+      // A member of the file list can be a folder too, and the platform
+      // states that by its type.
+      const isDirectory = entry.isdir === true
+        || Number(entry.coType ?? 1) === 2;
       files.push({
         id,
-        path: name,
+        path: isDirectory ? `${name}/` : name,
         name,
-        sizeBytes: Number.isFinite(size) && size > 0 ? size : null,
-        isDirectory: false,
-        modifiedAt: typeof entry.coCreateDate === 'string' ? entry.coCreateDate : undefined,
+        sizeBytes: !isDirectory && Number.isFinite(size) && size > 0 ? size : null,
+        isDirectory,
+        modifiedAt: typeof entry.udTime === 'string' ? entry.udTime
+          : typeof entry.ctTime === 'string' ? entry.ctTime
+          : typeof entry.coCreateDate === 'string' ? entry.coCreateDate : undefined,
       });
     }
     return files;
@@ -105,9 +134,10 @@ export const c139Adapter: C139Adapter = {
       pCaID: 'root',
       eNum: 200,
     };
+    const plain = JSON.stringify({ getOutLinkInfoReq: request });
     const response = await context.session.postJson(
       SHARE_LIST_URL,
-      this.encryptBody(JSON.stringify({ getOutLinkInfoReq: request })),
+      this.encryptBody(plain),
       {
         'Content-Type': 'application/json;charset=UTF-8',
         'User-Agent': MOBILE_UA,
@@ -120,6 +150,9 @@ export const c139Adapter: C139Adapter = {
         'x-deviceinfo': X_DEVICEINFO,
         'x-huawei-channelsrc': X_HUAWEI_CHANNELSRC,
         'x-mm-source': X_MM_SOURCE,
+        // The gateway checks the signature of the plain body, so it is
+        // signed before the body is encrypted.
+        'mcloud-sign': this.signHeader(plain),
       },
     );
     const raw = typeof response.data === 'string' ? response.data : JSON.stringify(response.data ?? {});
@@ -145,9 +178,10 @@ export const c139Adapter: C139Adapter = {
       coIDLst: { item: [file.id] },
       commonAccountInfo: { account: '', accountType: 1 },
     };
+    const plain = JSON.stringify({ dlFromOutLinkReqV3: request });
     const response = await context.session.postJson(
       SHARE_LINK_URL,
-      this.encryptBody(JSON.stringify({ dlFromOutLinkReqV3: request })),
+      this.encryptBody(plain),
       {
         'Content-Type': 'application/json;charset=UTF-8',
         'User-Agent': MOBILE_UA,
@@ -158,6 +192,9 @@ export const c139Adapter: C139Adapter = {
         'x-deviceinfo': X_DEVICEINFO,
         'x-huawei-channelsrc': X_HUAWEI_CHANNELSRC,
         'x-mm-source': X_MM_SOURCE,
+        // The gateway checks the signature of the plain body, so it is
+        // signed before the body is encrypted.
+        'mcloud-sign': this.signHeader(plain),
       },
     );
     const raw = typeof response.data === 'string' ? response.data : JSON.stringify(response.data ?? {});

@@ -90,6 +90,12 @@ const allowedHeaders = new Set([
   'user-agent', 'referer', 'origin', 'accept', 'accept-language', 'cookie', 'content-type',
   'range', 'authorization', 'x-requested-with', 'x-api-version', 'x-device-id',
   'x-client-type', 'x-app-version', 'x-os-version', 'x-source', 'x-source-version',
+  // The share endpoints of the 139 cloud are reached through a gateway that
+  // checks a signature of the body and a few flags of the client.
+  'mcloud-sign', 'hcy-cool-flag', 'x-deviceinfo', 'x-huawei-channelsrc', 'x-mm-source',
+  // The endpoints of the 123 cloud and of the 115 cloud check a signature or
+  // the version of the client that asks.
+  'x-client-version', 'platform', 'app-version', 'auth-key', 'auth-value',
 ]);
 
 export function safeRequestHeaders(headers?: Record<string, string>): Record<string, string> {
