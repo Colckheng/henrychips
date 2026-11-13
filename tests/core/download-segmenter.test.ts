@@ -102,6 +102,40 @@ test('sends the headers of the link with every segment request', async t => {
   }
 });
 
+test('asks the server for the real size instead of trusting the announced one', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'workstation-segment-real-size-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  // The platform announces more bytes than the file has: a share of a rar
+  // archive announced 2,097,152 bytes and served 2,068,480.
+  const payload = Buffer.from('0123456789');
+  const http = {
+    getRaw: async () => ({
+      finalUrl: '', status: 206, contentType: 'application/octet-stream',
+      bytes: new Uint8Array(), setCookie: [], headers: { 'content-range': `bytes 0-0/${payload.length}` },
+    }),
+    getStream: async (url: string, _signal: AbortSignal, options?: { headers?: Record<string, string> }) => {
+      const range = options?.headers?.Range ?? '';
+      const matched = /bytes=(\d+)-(\d*)/.exec(range);
+      const start = Number(matched?.[1] ?? 0);
+      const end = matched?.[2] ? Number(matched[2]) : payload.length - 1;
+      return {
+        finalUrl: url, status: 206, contentType: 'application/octet-stream',
+        contentLength: end - start + 1,
+        body: Readable.from([payload.subarray(start, Math.min(end + 1, payload.length))]),
+        headers: { 'content-range': `bytes ${start}-${end}/${payload.length}` },
+      };
+    },
+  } as unknown as PublicHttp;
+  const writer = createFileWriter(directory, new AbortController().signal, 1_048_576);
+  const result = await downloadSegmented(linkOf({ sizeBytes: 20 }), {
+    http, writer, signal: new AbortController().signal, outputPath: 'a.bin', connections: 2,
+  });
+  // The file is split by the size the server reports, not by the announced one.
+  assert.equal(result.totalBytes, payload.length);
+  assert.equal(result.bytesWritten, payload.length);
+  assert.equal((await readFile(path.join(directory, 'a.bin'))).toString(), '0123456789');
+});
+
 test('skips the segments that are already done when it continues', async t => {
   const directory = await mkdtemp(path.join(tmpdir(), 'workstation-segment-resume-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -228,6 +262,10 @@ test('tries a segment again when the connection breaks halfway', async t => {
   const payload = Buffer.from('0123456789');
   let calls = 0;
   const http = {
+    getRaw: async () => ({
+      finalUrl: '', status: 206, contentType: 'application/octet-stream',
+      bytes: new Uint8Array(), setCookie: [], headers: { 'content-range': `bytes 0-0/${payload.length}` },
+    }),
     getStream: async (url: string, _signal: AbortSignal, options?: { headers?: Record<string, string> }) => {
       calls++;
       const range = options?.headers?.Range ?? '';

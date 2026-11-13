@@ -1,3 +1,4 @@
+import type { NdmClient } from '../core/ndm/client.js';
 export type Category = 'files' | 'documents' | 'web' | 'data' | 'developer' | 'text' | 'media';
 export type Capability = 'files:read' | 'files:write' | 'network:public' | 'process:probe' | 'browser:local' | 'downloader:local';
 export interface FieldDefinition {
@@ -116,6 +117,37 @@ export interface ProgressUpdate {
   percent?: number;
 }
 
+/**
+ * The part of the download manager a tool needs. The contract is described
+ * here, so the browser side does not have to compile the manager of the
+ * server.
+ */
+export interface DownloadTaskSummary {
+  id: string;
+  status: string;
+  bytesWritten: number;
+  totalBytes: number | null;
+}
+
+export interface DownloadTasks {
+  list(): DownloadTaskSummary[];
+  create(input: {
+    platform: string;
+    title: string;
+    fileName: string;
+    filePath: string;
+    sizeBytes: number | null;
+    backend: 'builtin' | 'ndm';
+    source: { platform: string; shareUrl: string; code: string | null; filePath: string; fileId: string };
+    outputPath: string;
+    link: {
+      path: string; name: string; sizeBytes: number | null; url: string;
+      headers: Record<string, string>; rangeSupported: boolean | null;
+      source: { platform: string; shareUrl: string; code: string | null; filePath: string; fileId: string };
+    };
+  }): DownloadTaskSummary;
+}
+
 export interface ToolContext {
   signal: AbortSignal;
   limits: Readonly<Limits>;
@@ -125,6 +157,10 @@ export interface ToolContext {
   output?: FileWriter;
   http?: PublicHttp;
   probes?: ProcessProbe;
+  /** The queue of the download tasks. A tool only adds a task to it. */
+  downloads?: DownloadTasks;
+  /** The client of the local download manager, when the environment has one. */
+  ndm?: NdmClient;
 }
 export interface IntegrationInfo {
   configPath: string;

@@ -55,22 +55,54 @@ const SEGMENT_ATTEMPTS = 3;
 /** The ceiling of one segment request. A slow segment must not hang the whole download. */
 const SEGMENT_TIMEOUT_MS = 60_000;
 
+/**
+ * The size the server really has.
+ *
+ * The size the platform announces can differ from the number of bytes the
+ * file has: a share of a rar archive announced 2,097,152 bytes served
+ * 2,068,480. A segment that reaches past the end of the file is answered
+ * with the whole file instead of the range, which would write the bytes to
+ * the wrong offsets. So the real size is asked for before the file is split.
+ */
+async function probeRealSize(link: NetdiskLink, http: PublicHttp, signal: AbortSignal): Promise<number | null> {
+  const response = await http.getRaw(link.url, signal, {
+    headers: { ...link.headers, Range: 'bytes=0-0' },
+    maxBytes: 1024,
+    allowErrorStatus: true,
+  });
+  if (response.status !== 206) return null;
+  const range = response.headers['content-range'];
+  const total = range ? Number(/\/(\d+)\s*$/.exec(range)?.[1] ?? Number.NaN) : Number.NaN;
+  return Number.isFinite(total) && total > 0 ? total : null;
+}
+
 export async function downloadSegmented(link: NetdiskLink, options: SegmenterOptions): Promise<SegmenterResult> {
-  const total = link.sizeBytes ?? 0;
-  if (!total) throw new ToolError('TOOL_FAILED', '无法确定文件大小，无法下载。');
-  const connections = Math.max(1, options.connections ?? 8);
+  const announced = link.sizeBytes ?? 0;
+  if (!announced) throw new ToolError('TOOL_FAILED', '无法确定文件大小，无法下载。');
   const useRange = link.rangeSupported !== false;
+  // The announced size is only a guess, so the server is asked how many bytes
+  // it really has before the file is split.
+  const probed = useRange ? await probeRealSize(link, options.http, options.signal).catch(() => null) : null;
+  const total = probed ?? announced;
+  // A server that cannot answer the question about its own size may still
+  // serve ranges perfectly, so the download stays segmented with the
+  // announced size and the last segment may end earlier than announced.
+  const segmented = useRange;
+  // Only a size that was asked for is exact. Without an answer the announced
+  // size is a guess, and the file may end before it.
+  const sizeIsExact = probed !== null;
+  const connections = Math.max(1, options.connections ?? 8);
   // The table that is passed in is continued, so the segments that are already
   // done are never fetched again. The table is filled in place, so a caller
   // that never sees the result still knows which segments are done.
   const table: SegmentTable = options.segments && options.segments.size === total
     ? options.segments
-    : { size: total, segments: splitSegments(total, useRange ? connections : 1) };
+    : { size: total, segments: splitSegments(total, segmented ? connections : 1) };
   // A link without resuming is fetched in one piece, so the table holds one
   // segment that covers the whole file. A table that already holds finished
   // bytes cannot be continued by such a link, so the download is refused
   // instead of producing a file with holes in it.
-  if (!useRange) {
+  if (!segmented) {
     if (options.segments && options.segments.segments.some(segment => segment.done)) {
       throw new ToolError('TOOL_FAILED', '该直链不支持断点续传，无法接着已下载的字节继续，请重新开始下载。');
     }
@@ -85,6 +117,8 @@ export async function downloadSegmented(link: NetdiskLink, options: SegmenterOpt
   const handle = await options.writer.open(options.outputPath, { overwrite: true, truncateTo: total });
   /** The bytes that are written for one segment, so a retry continues where it stopped. */
   const written = new Map<Segment, number>();
+  /** The reason of the first segment that failed, before the others were stopped. */
+  let firstFailure: unknown;
   const startedAt = Date.now();
   let lastTickAt = startedAt;
   let lastTickBytes = 0;
@@ -110,11 +144,15 @@ export async function downloadSegmented(link: NetdiskLink, options: SegmenterOpt
     // A failing segment ends the whole download, so the other segments are
     // stopped right away. Every segment has to settle before the file handle
     // is closed, so none of them writes to a closed handle.
+    //
+    // The segment that failed first carries the real reason. The segments
+    // that were stopped afterwards only report the cancellation, so they must
+    // not be allowed to mask it.
     const outcomes = await Promise.allSettled(table.segments.map(segment => runSegment(segment)));
     const failure = outcomes.find(outcome => outcome.status === 'rejected');
-    if (failure) throw failure.reason;
+    if (failure) throw firstFailure ?? failure.reason;
     report(true);
-    return { bytesWritten: total, totalBytes: total, rangeSupported: useRange, table };
+    return { bytesWritten: total, totalBytes: total, rangeSupported: segmented, table };
   } finally {
     await handle.close();
   }
@@ -124,6 +162,9 @@ export async function downloadSegmented(link: NetdiskLink, options: SegmenterOpt
     try {
       await fetchSegment(segment);
     } catch (error) {
+      // The first failure is the real reason, the ones after it are only the
+      // effect of the stop.
+      if (!firstFailure) firstFailure = error;
       stopped.abort();
       throw error;
     }
@@ -146,7 +187,7 @@ export async function downloadSegmented(link: NetdiskLink, options: SegmenterOpt
         if (signal.aborted) throw new ToolError('CANCELLED', '下载已取消。');
         // Without resuming the server sends the file from its start again, so
         // a half written segment cannot be continued.
-        if (!useRange) throw error;
+        if (!segmented) throw error;
         if (attempt >= SEGMENT_ATTEMPTS) throw error;
       }
       if ((written.get(segment) ?? 0) >= segment.end - segment.start + 1) break;
@@ -156,7 +197,7 @@ export async function downloadSegmented(link: NetdiskLink, options: SegmenterOpt
   }
 
   async function readSegment(segment: Segment, from: number, to: number): Promise<void> {
-    const headers = useRange ? { ...link.headers, Range: `bytes=${from}-${to}` } : { ...link.headers };
+    const headers = segmented ? { ...link.headers, Range: `bytes=${from}-${to}` } : { ...link.headers };
     const response = await options.http.getStream(link.url, signal, {
       headers,
       timeoutMs: SEGMENT_TIMEOUT_MS,
@@ -169,14 +210,14 @@ export async function downloadSegmented(link: NetdiskLink, options: SegmenterOpt
       response.body.destroy();
       throw new LinkExpiredError(`直链已失效（HTTP ${response.status}）。`);
     }
-    if (useRange && response.status !== 206) {
+    if (segmented && response.status !== 206) {
       // A server that answers with the whole file instead of the requested
       // range would write the file to the wrong offsets, so the download stops
       // here rather than producing a damaged file.
       response.body.destroy();
       throw new SegmentProtocolError('该直链不支持分段下载（服务器未返回 206），已停止以免写出损坏的文件。');
     }
-    if (!useRange && response.status !== 200) {
+    if (!segmented && response.status !== 200) {
       response.body.destroy();
       throw new SegmentProtocolError(`下载失败（HTTP ${response.status}）。`);
     }
@@ -184,7 +225,7 @@ export async function downloadSegmented(link: NetdiskLink, options: SegmenterOpt
     // otherwise the bytes land on the wrong offsets.
     const contentRange = response.headers?.['content-range'];
     const rangeStart = contentRange ? Number(/bytes=(\d+)-/i.exec(contentRange)?.[1] ?? Number.NaN) : Number.NaN;
-    if (useRange && Number.isFinite(rangeStart) && rangeStart !== from) {
+    if (segmented && Number.isFinite(rangeStart) && rangeStart !== from) {
       response.body.destroy();
       throw new SegmentProtocolError('服务器返回的字节范围与请求的不一致，已停止以免写出损坏的文件。');
     }
@@ -213,6 +254,16 @@ export async function downloadSegmented(link: NetdiskLink, options: SegmenterOpt
       throw error;
     }
     if (count < segment.end - segment.start + 1) {
+      // The last segment may be shorter than the platform announced, when the
+      // real size could not be asked for. Then the end of the file is where
+      // the download ends, and the segment is complete.
+      const isLast = segment === table.segments[table.segments.length - 1];
+      if (isLast && !sizeIsExact && count > 0) {
+        segment.end = segment.start + count - 1;
+        segment.done = true;
+        await options.onSegmentComplete?.(table);
+        return;
+      }
       // The connection ended before the segment was complete. The segment is
       // asked again from the byte it stopped at, so nothing is fetched twice.
       throw new ToolError('NETWORK_ERROR', '分段下载中断，将从断点继续。');

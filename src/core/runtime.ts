@@ -5,6 +5,7 @@ import { createRegistry } from '../tools/index.js';
 import { createPublicHttp } from './public-http.js';
 import { createProcessProbe } from './process-probe.js';
 import { DownloadManager } from './download/manager.js';
+import { NdmClient } from './ndm/client.js';
 import { ToolError } from './errors.js';
 import { NetdiskSession } from '../tools/netdisk/session.js';
 import { adaptersByPlatform } from '../tools/netdisk/adapters/index.js';
@@ -50,7 +51,8 @@ export function createRuntime(config: WorkstationConfig) {
       return adapter.link(context, file);
     },
   });
-  const executor = new ToolExecutor(registry, config, store, { http, probes: createProcessProbe() });
-  return { registry, store, executor, downloads };
+  const ndm = new NdmClient();
+  const executor = new ToolExecutor(registry, config, store, { http, probes: createProcessProbe(), downloads, ndm });
+  return { registry, store, executor, downloads, ndm };
 }
 export type Runtime = ReturnType<typeof createRuntime>;

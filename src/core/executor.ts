@@ -7,6 +7,7 @@ import { RunStore } from './run-store.js';
 import { ToolError } from './errors.js';
 import { createFileAccess, createFileWriter } from './file-access.js';
 import { ProgressStore } from './progress.js';
+import type { NdmClient } from './ndm/client.js';
 
 export interface RunOptions {
   source: RunSource;
@@ -35,7 +36,7 @@ export class ToolExecutor {
     readonly registry: ToolRegistry,
     private readonly config: WorkstationConfig,
     readonly store: RunStore,
-    private readonly services: { http?: PublicHttp; probes?: ProcessProbe } = {},
+    private readonly services: { http?: PublicHttp; probes?: ProcessProbe; downloads?: ToolContext['downloads']; ndm?: NdmClient } = {},
   ) {}
 
   /** Cancels a run that is still in flight. Used by the explicit cancel route. */
@@ -136,6 +137,11 @@ export class ToolExecutor {
       if (tool.capabilities.includes('files:write')) context.output = createFileWriter(this.config.outputDirectory, signal, this.config.limits.outputBytes);
       if (tool.capabilities.includes('network:public')) context.http = this.services.http;
       if (tool.capabilities.includes('process:probe')) context.probes = this.services.probes;
+      // The download manager and the local downloader are injected on their
+      // own, because a tool that only hands a link over needs neither the
+      // network nor the file system.
+      if (tool.capabilities.includes('downloader:local')) context.ndm = this.services.ndm;
+      context.downloads = this.services.downloads;
       const data = await tool.invoke(input, context);
       signal.throwIfAborted();
       result = { ok: true, data, meta };

@@ -9,7 +9,9 @@ export class ToolError extends Error {
 
 export function fileError(error: unknown): never {
   if (error instanceof ToolError) throw error;
-  const code = (error as NodeJS.ErrnoException)?.code;
+  // The shape of an error of the file system is described here, so the file
+  // does not depend on the types of the runtime.
+  const code = (error as { code?: string } | undefined)?.code;
   if (code === 'ENOENT') throw new ToolError('FILE_NOT_FOUND', '找不到指定的文件或目录。');
   if (code === 'EACCES' || code === 'EPERM') throw new ToolError('ACCESS_DENIED', '没有权限读取指定的文件或目录。');
   if (code === 'EISDIR' || code === 'ENOTDIR') throw new ToolError('INVALID_INPUT', '文件或目录类型与操作不符。');
