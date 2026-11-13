@@ -170,6 +170,140 @@ test('takes the links of the named paths only and reports a path that is not in 
   }
 });
 
+test('names a path of a folder instead of asking the platform for a link of it', async () => {
+  const folder: NetdiskFile = {
+    id: 'folder-1', path: 'tools/', name: 'tools', sizeBytes: null, isDirectory: true,
+  };
+  let asked = 0;
+  const restore = registerStub({
+    platform: 'quark',
+    label: '夸克网盘',
+    requiresCredential: false,
+    list: async () => ({ title: '测试分享', files: [folder, fileOf(1)] }),
+    link: async (context, file) => { asked++; return linkOf(context, file); },
+  });
+  const stateDirectory = await stateDirectoryOf();
+  try {
+    const result = await netdiskResolveTool.invoke(
+      { url: 'https://pan.quark.cn/s/abc123', paths: ['tools/'] },
+      contextOf(stateDirectory),
+    );
+    assert.equal(asked, 0);
+    assert.equal((result.links as NetdiskLink[]).length, 0);
+    assert.equal((result.linkFailures as unknown[]).length, 0);
+    const warnings = result.warnings as string[];
+    assert.ok(warnings.some(warning => warning.includes('tools/') && warning.includes('目录')));
+  } finally {
+    restore();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test('refuses the request instead of dropping the files that are over the limit', async () => {
+  const restore = registerStub({
+    platform: 'quark',
+    label: '夸克网盘',
+    requiresCredential: false,
+    list: async () => ({ title: '测试分享', files: Array.from({ length: 12 }, (_, index) => fileOf(index)) }),
+    link: async (context, file) => linkOf(context, file),
+  });
+  const stateDirectory = await stateDirectoryOf();
+  try {
+    await assert.rejects(
+      () => netdiskResolveTool.invoke(
+        { url: 'https://pan.quark.cn/s/abc123', maxLinks: 10 },
+        contextOf(stateDirectory),
+      ),
+      { code: 'LIMIT_EXCEEDED' },
+    );
+  } finally {
+    restore();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test('takes a token out of the reason of a failure', async () => {
+  const restore = registerStub({
+    platform: 'quark',
+    label: '夸克网盘',
+    requiresCredential: false,
+    list: async () => ({ title: '测试分享', files: [fileOf(1)] }),
+    link: async () => {
+      throw new ToolError('TOOL_FAILED', '平台拒绝了这个请求：BDUSS=aVeryLongCredentialValue0123456789');
+    },
+  });
+  const stateDirectory = await stateDirectoryOf();
+  try {
+    const result = await netdiskResolveTool.invoke({ url: 'https://pan.quark.cn/s/abc123' }, contextOf(stateDirectory));
+    const failures = result.linkFailures as Array<{ path: string; reason: string }>;
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].reason.includes('aVeryLongCredentialValue0123456789'), false);
+    // The words that say what went wrong stay.
+    assert.ok(failures[0].reason.includes('平台拒绝了这个请求'));
+  } finally {
+    restore();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test('rejects a link that does not fit the contract of the adapters', async () => {
+  const restore = registerStub({
+    platform: 'quark',
+    label: '夸克网盘',
+    requiresCredential: false,
+    list: async () => ({ title: '测试分享', files: [fileOf(1)] }),
+    link: async (context, file) => ({ ...linkOf(context, file), extra: 'field' }) as unknown as NetdiskLink,
+  });
+  const stateDirectory = await stateDirectoryOf();
+  try {
+    await assert.rejects(
+      () => netdiskResolveTool.invoke({ url: 'https://pan.quark.cn/s/abc123' }, contextOf(stateDirectory)),
+      { code: 'TOOL_FAILED' },
+    );
+  } finally {
+    restore();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test('ends the run when it is cancelled instead of failing the file', async () => {
+  const restore = registerStub({
+    platform: 'quark',
+    label: '夸克网盘',
+    requiresCredential: false,
+    list: async () => ({ title: '测试分享', files: [fileOf(1)] }),
+    link: async () => { throw new ToolError('CANCELLED', '本次执行已取消。'); },
+  });
+  const stateDirectory = await stateDirectoryOf();
+  try {
+    await assert.rejects(
+      () => netdiskResolveTool.invoke({ url: 'https://pan.quark.cn/s/abc123' }, contextOf(stateDirectory)),
+      { code: 'CANCELLED' },
+    );
+  } finally {
+    restore();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test('states a total of zero for an empty share', async () => {
+  const restore = registerStub({
+    platform: 'quark',
+    label: '夸克网盘',
+    requiresCredential: false,
+    list: async () => ({ title: '空分享', files: [] }),
+    link: async (context, file) => linkOf(context, file),
+  });
+  const stateDirectory = await stateDirectoryOf();
+  try {
+    const result = await netdiskResolveTool.invoke({ url: 'https://pan.quark.cn/s/abc123' }, contextOf(stateDirectory));
+    assert.equal(result.totalBytes, 0);
+  } finally {
+    restore();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+});
+
 test('refuses a platform that needs a credential that is not configured', async () => {
   const restore = registerStub({
     platform: 'baidu',
