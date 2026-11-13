@@ -325,6 +325,13 @@ test('keeps concurrent requests to one host spaced out', async () => {
   assert.equal(slots.length, 3);
   assert.ok(slots[1] - slots[0] >= 100, 'the second call must reserve a later slot');
   assert.ok(slots[2] - slots[1] >= 100, 'the third call must reserve a later slot as well');
+  // The reservations alone do not prove that the requests waited, so the
+  // arrivals are checked too: a request may not leave before its own slot
+  // minus the tolerance, which covers a timer that wakes a little early and
+  // the scheduling between the reservation and the request.
+  assert.ok(seen[0].at >= slots[0] - 20, 'the first call must not leave before its slot');
+  assert.ok(seen[1].at >= slots[1] - 20, 'the second call must not leave before its slot');
+  assert.ok(seen[2].at >= slots[2] - 20, 'the third call must not leave before its slot');
 });
 
 test('refuses to send after the session signal is aborted', async () => {
