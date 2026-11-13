@@ -6,6 +6,7 @@ import { getProjectRoot, type WorkstationConfig } from '../../core/config.js';
 import type { Runtime } from '../../core/runtime.js';
 import type { ErrorCode } from '../../contracts/run.js';
 import type { IntegrationInfo } from '../../contracts/tool.js';
+import type { DownloadTask } from '../../core/download/task-store.js';
 import { openDirectory } from '../../core/opener.js';
 import { readRelayClientConfig, relayHeaders } from '../../relay/client-config.js';
 
@@ -28,6 +29,18 @@ function aiUsageGuide(address: string): string {
 function ownerTokenOf(request: { headers: Record<string, unknown> }): string | undefined {
   const header = request.headers['x-run-token'];
   return typeof header === 'string' ? header : undefined;
+}
+
+/**
+ * The task as the clients see it. The record of a task holds the share it
+ * came from and the direct link in use, and both carry the passcode of the
+ * share or the session of the platform, so they never leave the workstation.
+ */
+type DownloadTaskView = Omit<DownloadTask, 'source' | 'link'>;
+
+function downloadTaskView(task: DownloadTask): DownloadTaskView {
+  const { source, link, ...rest } = task;
+  return rest;
 }
 
 const statuses: Record<ErrorCode, number> = { TOOL_NOT_FOUND: 404, INVALID_INPUT: 400, ACCESS_DENIED: 403, FILE_NOT_FOUND: 404, UNSUPPORTED_FORMAT: 422, LIMIT_EXCEEDED: 413, BUSY: 429, NETWORK_ERROR: 502, TIMEOUT: 504, CANCELLED: 408, TOOL_FAILED: 500 };
@@ -172,5 +185,37 @@ export function registerRoutes(app: FastifyInstance, config: WorkstationConfig, 
       mcp: { configured: false, buildReady: existsSync(mcpEntry), config: { mcpServers: { 'personal-workstation': { command: process.execPath, args: [normalize(mcpEntry), '--config', normalize(config.configPath)] } } } },
       cli: [`node "${normalize(cliEntry)}" list --json`, `node "${normalize(cliEntry)}" run text_stats --input-file "${normalize(path.join(config.workspaceRoot, 'samples/text-input.json'))}" --config "${normalize(config.configPath)}"`],
     };
+  });
+  // A download task lives in the state directory of the workstation, so it
+  // belongs to the machine and not to the browser tab that started it. It
+  // therefore needs no owner token, and every tab may steer it.
+  app.get('/api/downloads', async () => ({ tasks: runtime.downloads.list().map(downloadTaskView) }));
+  app.get<{ Params: { id: string } }>('/api/downloads/:id', async (request, reply) => {
+    const task = runtime.downloads.get(request.params.id);
+    if (!task) return reply.code(404).send({ error: { code: 'TOOL_NOT_FOUND', message: '没有找到该下载任务。' } });
+    return downloadTaskView(task);
+  });
+  app.post<{ Params: { id: string } }>('/api/downloads/:id/pause', async (request) => ({ paused: runtime.downloads.pause(request.params.id) }));
+  app.post<{ Params: { id: string } }>('/api/downloads/:id/resume', async (request) => ({ resumed: runtime.downloads.resume(request.params.id) }));
+  app.delete<{ Params: { id: string } }>('/api/downloads/:id', async (request) => ({ removed: runtime.downloads.remove(request.params.id) }));
+  app.get('/api/downloads/events', (_request, reply) => {
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-store',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    const send = (value: unknown) => { if (!reply.raw.writableEnded) reply.raw.write(`data: ${JSON.stringify(value)}\n\n`); };
+    // Always send a first frame so clients never wait for a task to change.
+    send({ tasks: runtime.downloads.list().map(downloadTaskView) });
+    const unsubscribe = runtime.downloads.subscribe(tasks => send({ tasks: tasks.map(downloadTaskView) }));
+    const heartbeat = setInterval(() => { if (!reply.raw.writableEnded) reply.raw.write(': keep-alive\n\n'); }, 15_000);
+    const close = () => {
+      clearInterval(heartbeat);
+      unsubscribe();
+      if (!reply.raw.writableEnded) reply.raw.end();
+    };
+    reply.raw.once('close', close);
+    return reply;
   });
 }
