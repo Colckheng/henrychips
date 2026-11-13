@@ -8,11 +8,15 @@ const WEB_SITE = 'https://www.guangyapan.com';
 const CLIENT_ID = '0982a450-3342-3c45-9d05-b1c2bf72e0f6';
 const PAGE_SIZE = 100;
 
-/** The business answer of the platform, before it is looked at closely. */
+/**
+ * The business answer of the platform, before it is looked at closely.
+ */
 interface GuangYaAnswer {
-  code?: number;
+  code?: number | string;
   msg?: string;
   message?: string;
+  success?: boolean;
+  error?: string;
   data?: unknown;
   [key: string]: unknown;
 }
@@ -29,12 +33,24 @@ export type GuangYaAdapter = NetdiskAdapter & {
   parseTitle(data: unknown): string;
   /** Turns the business code of the platform into a message. */
   describeError(code: number, message: string): string;
+  /** Reads the business code of an answer, which the platform states as text. */
+  businessCode(answer: GuangYaAnswer): number;
   request(context: AdapterContext, path: string, body: Record<string, unknown>): Promise<GuangYaAnswer>;
 };
 
-/** The platform answers with a business code instead of a status. */
+/**
+ * The platform answers with a business code instead of a status, and it states
+ * that code as text. A code that is read as a number would be read as zero,
+ * and an answer that carries an error would look like a good one.
+ */
 function businessCode(answer: GuangYaAnswer): number {
-  return typeof answer.code === 'number' ? answer.code : 0;
+  const raw = answer.code;
+  const code = typeof raw === 'number' ? raw : Number(typeof raw === 'string' ? raw.trim() : Number.NaN);
+  if (Number.isFinite(code)) return code;
+  // Without a code the answer is a good one, unless it says otherwise.
+  if (answer.success === false) return 1;
+  if (typeof answer.error === 'string' && answer.error) return 1;
+  return 0;
 }
 
 /**
@@ -55,27 +71,87 @@ function headersOf(): Record<string, string> {
 /** The entries of a folder share, with the folder flag under either key. */
 function entriesOf(data: unknown): NetdiskFile[] {
   const root = data && typeof data === 'object' ? data as Record<string, unknown> : {};
-  const raw = Array.isArray(root.text) ? root.text : Array.isArray(root.list) ? root.list : [];
+  // The platform names the array of the members differently depending on the
+  // endpoint, so every name it uses is tried.
+  const raw = ['list', 'items', 'files', 'records', 'content', 'text']
+    .map(name => root[name])
+    .find(value => Array.isArray(value)) as unknown[] | undefined;
   const files: NetdiskFile[] = [];
-  for (const item of raw) {
+  for (const item of raw ?? []) {
     if (!item || typeof item !== 'object') continue;
     const entry = item as Record<string, unknown>;
-    const id = typeof entry.id === 'string' ? entry.id : '';
+    const id = firstText(entry, ['fileId', 'file_id', 'id', 'resId', 'resourceId']);
     if (!id) continue;
-    const name = typeof entry.name === 'string' ? entry.name : id;
-    const isDirectory = entry.is_folder === 1 || entry.is_folder === true
-      || entry.isdir === 1 || entry.isdir === true || entry.is_dir === 1 || entry.is_dir === true;
-    const size = Number(entry.size ?? 0);
+    const name = firstText(entry, ['fileName', 'name', 'filename', 'dirName', 'title']) || id;
+    const isDirectory = isFolderOf(entry, name);
+    const size = numberOf(entry, ['fileSize', 'size', 'file_size']);
     files.push({
       id,
       path: isDirectory ? `${name}/` : name,
       name,
-      sizeBytes: Number.isFinite(size) && size > 0 ? size : null,
+      sizeBytes: !isDirectory && Number.isFinite(size) && size > 0 ? size : null,
       isDirectory,
-      modifiedAt: typeof entry.update_time === 'string' ? entry.update_time : undefined,
+      modifiedAt: firstText(entry, ['updatedAt', 'updateAt', 'updated_at', 'updateTime', 'mtime', 'utime', 'createdAt', 'createTime', 'ctime']) || undefined,
     });
   }
   return files;
+}
+
+/** The first of the fields that holds a text. */
+function firstText(entry: Record<string, unknown>, names: string[]): string {
+  for (const name of names) {
+    const value = entry[name];
+    if (typeof value === 'string' && value) return value;
+  }
+  return '';
+}
+
+/**
+ * The first of the fields that holds a number. The platform states the size
+ * of a file as text in some answers and as a number in others.
+ */
+function numberOf(entry: Record<string, unknown>, names: string[]): number {
+  for (const name of names) {
+    const value = entry[name];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value.trim());
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return 0;
+}
+
+/**
+ * Whether a member of the share is a folder.
+ *
+ * The platform states the kind of a member by its resource type, and only
+ * falls back to the flags when it does not say.
+ */
+function isFolderOf(entry: Record<string, unknown>, name: string): boolean {
+  const resType = entry.resType;
+  if (typeof resType === 'string') {
+    if (resType === '2') return true;
+    if (resType === '1') return false;
+  }
+  if (typeof resType === 'number') {
+    if (resType === 2) return true;
+    if (resType === 1) return false;
+  }
+  // The flags of the platform are the next sign of a folder.
+  if (entry.isDir === true || entry.isdir === true || entry.dir === true
+    || entry.isFolder === true || entry.folder === true) return true;
+  if (entry.is_folder === 1 || entry.is_folder === true || entry.isdir === 1
+    || entry.is_dir === 1 || entry.is_dir === true) return true;
+  if (entry.isDir === false || entry.isdir === false || entry.dir === false
+    || entry.is_folder === 0 || entry.is_dir === 0) return false;
+  const type = typeof entry.type === 'string' ? entry.type.toLowerCase() : '';
+  if (['folder', 'dir', 'directory', '0'].includes(type)) return true;
+  const fileType = typeof entry.fileType === 'string' ? entry.fileType.toLowerCase() : '';
+  if (['folder', 'dir', 'directory', '0'].includes(fileType)) return true;
+  const dirType = entry.dirType;
+  // A name without a dot and a folder type of one is a folder.
+  return !name.includes('.') && (dirType === '1' || dirType === 1);
 }
 
 export const guangyaAdapter: GuangYaAdapter = {
@@ -114,10 +190,15 @@ export const guangyaAdapter: GuangYaAdapter = {
 
   describeError(code, message) {
     if (code === 207) return '该文件需要先转存到账号才能下载，请先登录光鸭云盘。';
+    if (code === 209) return '提取码不正确。';
     if (code === 401 || code === 403) return '该分享需要登录或已失效。';
     if (code === 404) return '分享不存在或已经取消。';
     if (code === 429) return '光鸭云盘请求过于频繁，请稍后重试。';
     return message || `光鸭云盘返回了未知的业务码 ${code}。`;
+  },
+
+  businessCode(answer) {
+    return businessCode(answer);
   },
 
   async request(context: AdapterContext, path: string, body: Record<string, unknown>): Promise<GuangYaAnswer> {
@@ -138,8 +219,7 @@ export const guangyaAdapter: GuangYaAdapter = {
       shareId: context.shareId,
       code: context.code ?? '',
     });
-    const tokenValue = typeof (token.data as Record<string, unknown> | undefined)?.accessToken === 'string'
-      ? String((token.data as Record<string, unknown>).accessToken) : '';
+    const tokenValue = firstText((token.data ?? {}) as Record<string, unknown>, ['accessToken', 'access_token']);
     if (!tokenValue) throw new ToolError('TOOL_FAILED', '光鸭云盘没有返回访问令牌，提取码可能不正确。');
 
     const files: NetdiskFile[] = [];
@@ -171,15 +251,16 @@ export const guangyaAdapter: GuangYaAdapter = {
       shareId: context.shareId,
       code: context.code ?? '',
     });
-    const tokenValue = typeof (token.data as Record<string, unknown> | undefined)?.accessToken === 'string'
-      ? String((token.data as Record<string, unknown>).accessToken) : '';
+    const tokenValue = firstText((token.data ?? {}) as Record<string, unknown>, ['accessToken', 'access_token']);
     const answer = await this.request(context, '/userres/v1/get_share_download_url', {
       shareId: context.shareId,
       accessToken: tokenValue,
       fileId: file.id,
     });
     const data = (answer.data ?? {}) as Record<string, unknown>;
-    const url = typeof data.url === 'string' ? data.url : typeof data.downloadUrl === 'string' ? data.downloadUrl : '';
+    // The platform names the address of a file differently depending on the
+    // endpoint, so every name it uses is tried.
+    const url = firstText(data, ['signedURL', 'signedUrl', 'downloadUrl', 'download_url', 'url', 'cdnUrl']);
     if (!url) throw new ToolError('TOOL_FAILED', '光鸭云盘没有返回下载地址。');
     const headers = { ...headersOf(), Referer: `${WEB_SITE}/` };
     const probe = await context.session.probe(url, headers);

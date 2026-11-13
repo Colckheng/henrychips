@@ -53,3 +53,53 @@ test('turns the business codes of the platform into a message', () => {
   assert.match(guangyaAdapter.describeError(404, ''), /不存在/);
   assert.equal(guangyaAdapter.describeError(0, '原文'), '原文');
 });
+
+test('reads the business code of an answer, which the platform states as text', () => {
+  // The platform states the code as text, so a code that is read as a number
+  // would be read as zero and an error would look like a good answer.
+  assert.equal(guangyaAdapter.businessCode({ code: '0' }), 0);
+  assert.equal(guangyaAdapter.businessCode({ code: 0 }), 0);
+  assert.equal(guangyaAdapter.businessCode({ code: '209' }), 209);
+  assert.equal(guangyaAdapter.businessCode({ code: '207' }), 207);
+  // An answer without a code is a good one.
+  assert.equal(guangyaAdapter.businessCode({}), 0);
+  // Unless it says otherwise.
+  assert.equal(guangyaAdapter.businessCode({ success: false }), 1);
+  assert.equal(guangyaAdapter.businessCode({ error: '出错了' }), 1);
+});
+
+test('reads the entries out of the names the platform uses', () => {
+  // The platform names the array of the members differently depending on the
+  // endpoint, so every name it uses has to be read.
+  const shapes = [
+    { list: [{ fileId: 'f1', fileName: 'a.bin', fileSize: 1024, resType: '1' }] },
+    { items: [{ fileId: 'f1', fileName: 'a.bin', fileSize: 1024, resType: '1' }] },
+    { files: [{ fileId: 'f1', fileName: 'a.bin', fileSize: 1024, resType: '1' }] },
+    { records: [{ fileId: 'f1', fileName: 'a.bin', fileSize: 1024, resType: '1' }] },
+    { content: [{ fileId: 'f1', fileName: 'a.bin', fileSize: 1024, resType: '1' }] },
+  ];
+  for (const shape of shapes) {
+    const files = guangyaAdapter.parseEntries(shape);
+    assert.equal(files.length, 1, `the shape ${Object.keys(shape)[0]} must be read`);
+    assert.equal(files[0].id, 'f1');
+    assert.equal(files[0].name, 'a.bin');
+    assert.equal(files[0].sizeBytes, 1024);
+    assert.equal(files[0].isDirectory, false);
+  }
+});
+
+test('tells a folder from a file by the kind the platform states', () => {
+  // The platform states the kind of a member by its resource type.
+  const files = guangyaAdapter.parseEntries({
+    list: [
+      { fileId: 'f1', fileName: 'a.bin', fileSize: 1024, resType: '1' },
+      { fileId: 'd1', fileName: 'folder', resType: '2' },
+      { fileId: 'd2', fileName: 'other', dirType: '1' },
+    ],
+  });
+  assert.equal(files.length, 3);
+  assert.equal(files[0].isDirectory, false);
+  assert.equal(files[1].isDirectory, true);
+  assert.equal(files[1].path, 'folder/');
+  assert.equal(files[2].isDirectory, true);
+});
