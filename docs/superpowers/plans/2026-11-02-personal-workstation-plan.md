@@ -1,6 +1,6 @@
 # 个人工作站：架构设计与详细实施计划
 
-> 状态：2026-11-02 首版框架与六个示例工具已完成；第二轮影音与文档工具（B 站、抖音、去水印、格式转换、照片压缩）已实现并验证；2026-11-03 增加 XLSX 表格分析、Electron 桌面端外壳、服务器中继与工作台「服务器」页。第 19 节记录各轮证据，第 23 节记录桌面端与中继的实现细节。
+> 状态：2026-11-02 首版框架与六个示例工具已完成；第二轮影音与文档工具（B 站、抖音、去水印、格式转换、照片压缩）已实现并验证；2026-11-03 增加 XLSX 表格分析、Electron 桌面端外壳、服务器中继与工作台「服务器」页；2026-11-13 增加网盘分享解析与下载（`netdisk_resolve`、`netdisk_download`）、九个平台适配器、下载任务页与 `credentials` CLI 子命令，注册工具数 14。第 19 节记录各轮证据，第 23 节记录桌面端与中继的实现细节。
 >
 > 实施方式：按本文的任务依次交付，每个任务经过验证后继续；使用 `superpowers:executing-plans` 协调，独立模块可交给子代理。项目已按用户要求初始化 Git（`main` 分支）并按阶段提交，但不发布远程服务。
 
@@ -28,7 +28,7 @@
 | 系统 | Windows，工具命令通过 Git Bash 执行 |
 | 终端 Node.js | 实测 `v22.23.4` |
 | 终端 npm | 实测 `10.9.2` |
-| 当前交付 | 首版已完成；运行方式、验证和限制见第 19 节；桌面端与中继见第 23 节 |
+| 当前交付 | 首版已完成；运行方式、验证和限制见第 19 节；桌面端与中继见第 23 节；网盘解析与下载见第 8.9、8.10 节与第 19 节的 2026-11-13 记录 |
 
 实现开始前重新检查目录，避免覆盖用户在计划审阅期间添加的文件。默认直接使用现有项目目录，不再嵌套创建同名应用。
 
@@ -198,7 +198,14 @@ D:/HenryChips/
 │  │  ├─ html-blocks.ts
 │  │  ├─ markdown.ts
 │  │  ├─ docx-build.ts
-│  │  └─ pdf-layout.ts
+│  │  ├─ pdf-layout.ts
+│  │  ├─ download/
+│  │  │  ├─ manager.ts              下载任务队列（排队、暂停、继续、删除）
+│  │  │  ├─ segment-table.ts        分片表与断点
+│  │  │  ├─ segmenter.ts            分片下载内核
+│  │  │  └─ task-store.ts           任务索引与任务目录
+│  │  └─ ndm/
+│  │     └─ client.ts               本机下载器（Neat Download Manager）对接
 │  ├─ tools/
 │  │  ├─ index.ts
 │  │  ├─ text-stats.ts
@@ -216,7 +223,27 @@ D:/HenryChips/
 │  │  ├─ doc-convert.ts
 │  │  ├─ doc-convert-helpers.ts
 │  │  ├─ photo-compress.ts
-│  │  └─ xlsx-summary.ts
+│  │  ├─ xlsx-summary.ts
+│  │  ├─ netdisk-resolve.ts        网盘分享解析
+│  │  ├─ netdisk-download.ts       网盘文件下载
+│  │  └─ netdisk/
+│  │     ├─ share-link.ts          分享文案 → 平台、分享码、提取码
+│  │     ├─ session.ts             主机隔离的 cookie jar 与请求节奏
+│  │     ├─ credentials.ts         凭证的读取、写入与覆盖
+│  │     ├─ refresh.ts             直链失效后重建适配器上下文
+│  │     ├─ paths.ts              分享内路径 → 输出目录内的安全文件名
+│  │     ├─ types.ts              平台无关类型与适配器契约
+│  │     └─ adapters/
+│  │        ├─ index.ts            适配器注册表
+│  │        ├─ lanzou.ts           蓝奏云
+│  │        ├─ guangya.ts          光鸭云盘
+│  │        ├─ quark.ts            夸克网盘
+│  │        ├─ uc.ts               UC 网盘
+│  │        ├─ pan115.ts           115 网盘
+│  │        ├─ c139.ts             139（和彩云）
+│  │        ├─ pan123.ts           123 云盘
+│  │        ├─ xunlei.ts           迅雷网盘
+│  │        └─ baidu.ts            百度网盘
 │  ├─ adapters/
 │  │  ├─ http/app.ts
 │  │  ├─ http/server.ts
@@ -251,6 +278,7 @@ D:/HenryChips/
 │     │  ├─ ResultData.tsx
 │     │  ├─ CsvResult.tsx
 │     │  ├─ FilesResult.tsx
+│     │  ├─ NetdiskResult.tsx
 │     │  ├─ CopyButton.tsx
 │     │  └─ Feedback.tsx
 │     └─ pages/
@@ -258,7 +286,8 @@ D:/HenryChips/
 │        ├─ ToolDetail.tsx
 │        ├─ History.tsx
 │        ├─ Integrations.tsx
-│        └─ Servers.tsx
+│        ├─ Servers.tsx
+│        └─ Downloads.tsx
 ├─ tests/
 │  ├─ core/
 │  ├─ tools/
@@ -497,9 +526,17 @@ export interface EnvironmentReport {
 5. 每次重定向都重新验证，最多跟随 3 次。
 6. 只接受默认 HTTP/HTTPS 端口；不允许任意端口扫描。
 7. 限制响应体为 2 MiB、超时为 15 秒、正文输出为最多 30,000 字符。
-8. 只接受 HTML 文本响应，不执行 JavaScript、不使用登录态、不携带浏览器 Cookie。
+8. 网页抓取工具（`web_extract` 等）只接受 HTML 文本响应，不执行 JavaScript、不使用登录态、不携带浏览器 Cookie。**网盘解析工具是另一类**：它们使用用户在状态目录内显式提供的网盘凭证（见 5.5 与 8.9），凭证只用于换取直链，不进入工具输出、运行摘要与日志。
 9. 提取结果保留来源 URL，并标记 `untrustedContent: true`；网页内容不能改变工具权限或系统指令。
 10. 测试使用受控的解析器和网络传输注入；生产环境没有允许访问私网的绕过参数。
+
+**网盘请求的额外约束（第 8.9、8.10 节新增）：**
+
+- 所有公网请求走同一个 `createPublicHttp`，因此 DNS 固定、每次重定向复验、私网拦截、端口白名单、响应体上限与取消传播同样适用。
+- 请求头一律经 `safeRequestHeaders` 过滤；`host`、`content-length`、`connection`、`transfer-encoding` 永不允许，含 CR/LF 的值一律丢弃。
+- 响应必须是 `identity` 编码。蓝奏云的下载节点忽略 `accept-encoding: identity`，所以该处**显式选择接受压缩**（`acceptCompressed`），解码后的字节数计入体积上限；其余调用点保持 identity。
+- 凭证按主机隔离：cookie 与账号令牌存在 `Map<host, …>` 里，调用方传入的 `Cookie`/`Authorization` 头一律剥离，跨主机重定向不携带凭证头并降级为 GET。凭证只能经 `setCookie`/`setAuthorization` 进入本域 jar。
+- 同一主机的请求之间至少间隔 250 毫秒，不同主机互不影响。
 
 ### 7.4 本地 HTTP 入口
 
@@ -513,7 +550,7 @@ export interface EnvironmentReport {
 
 ## 8. 工具清单
 
-首版六个示例工具见 8.1–8.6；8.7 集中记录后来追加的影音、去水印、格式转换、照片压缩与 XLSX 表格分析。当前共 12 个注册工具。
+首版六个示例工具见 8.1–8.6；8.7 集中记录后来追加的影音、去水印、格式转换、照片压缩与 XLSX 表格分析；8.9、8.10 记录网盘分享解析与下载。当前共 14 个注册工具。
 
 ### 8.1 文件整理预览：`files_plan`
 
@@ -694,6 +731,91 @@ export interface EnvironmentReport {
 - 平台拒绝自签名时会重新引导一次会话，并可退回使用浏览器实际收到的响应体，保证不会返回猜测数据。
 - 限制：`uifid` 与签名参数必须来自同一次页面会话，纯 HTTP 无法自行签发；平台对本机频繁匿名访问会限流，此时工具返回明确错误而不是空结果。
 
+### 8.9 网盘分享解析：`netdisk_resolve`
+
+**用途：** 把一条网盘分享链接（或整段分享文案）解析成"文件列表 + 已验证的下载直链 + 下载所需的请求头"。
+
+**输入：** `{ url, code?, platform?, mode?, paths?, maxLinks? }`。
+
+- `url`：分享链接或整段分享文案。识别器从文案中找出链接（只取从 `https://` 开始的 ASCII 片段，句末标点不算）与提取码。
+- `code`：提取码。不填则依次从链接查询参数、链接路径内嵌（115 命令形态）与文案关键词（`提取码`、`访问码`）中找。**文案关键词不含"密码"**，因为"解压密码"不是分享提取码。
+- `platform`：`auto`（默认）或指定平台。指定的平台和识别结果不符，工具报 `INVALID_INPUT`，不改用别的平台。
+- `mode`：`link`（默认，列文件并取直链）或 `list`（只列文件）。
+- `paths`：分享内的相对路径，每行一个。只给这些文件取直链。
+- `maxLinks`：一次最多取几条直链，默认 10，上限 50。
+
+**平台识别按解析后的主机名判断，不按链接文本做子串匹配**，所以 `https://example.com/pan.quark.cn/s/AbCdEf` 不会被认成夸克。识别 10 个平台：蓝奏云、蓝奏云优享版、光鸭云盘、夸克网盘、UC 网盘、115 网盘、139（和彩云）、123 云盘、迅雷网盘、百度网盘。**蓝奏云优享版没有公开解析接口，按名字拒绝**（`UNSUPPORTED_FORMAT`），不交给别的平台处理。
+
+**输出：** `platform`、`platformLabel`、`shareId`、`title`、`fileCount`、`totalBytes`、`files[]`、`links[]`、`linkFailures[]`、`credentialUsed`、`warnings[]`。`links[]` 的字段是封闭的（`z.strictObject`），适配器多写的字段到不了调用方；单条直链的字段为 `path`、`name`、`sizeBytes`、`url`、`headers`、`rangeSupported`、`expiresAt?`、`source`、`note?`。
+
+**行为：**
+
+- 目录没有自己的直链，请求目录路径时只提示"没有直链可取"，不向平台发请求。
+- 一个文件取链失败不影响其他文件：成功的直链照常给，失败的记进 `linkFailures[]`。
+- 失败原因里的长串（形似令牌）会被替换成"[已隐藏]"，说明性的文字保留。
+- 可取直链的文件超过 `maxLinks` 时**拒绝请求**（`LIMIT_EXCEEDED`）而不是悄悄丢掉一部分。
+- 路径不在分享里、或路径是目录，都写进 `warnings[]`。
+
+**限制：** 直链通常十几分钟内过期，输出会给出提醒；`credentialUsed` 只说明"用没用凭证"，**凭证本身不出现在输出、日志与运行摘要里**；各家平台对游客的大小限制、账号风控与接口变更仍然适用。
+
+**验收：** 各平台的链接与文案能识别出平台、分享码与提取码；目录不会被当成文件取链；一个文件失败时其余直链仍然给出；超过上限的请求被拒绝；输出中不含任何凭证值。
+
+**平台状态（2026-11-13）：**
+
+| 平台 | 需要凭证 | 真实平台验证 | 说明 |
+| --- | --- | --- | --- |
+| 蓝奏云 | 否 | **已端到端验证** | 见下方实测记录 |
+| 光鸭云盘 | 否 | 仅单元测试 | 按公开协议形状实现 |
+| 夸克网盘 | 否 | 仅单元测试 | 同上；游客通道有大小限制 |
+| UC 网盘 | 否 | 仅单元测试 | 同上 |
+| 115 网盘 | 否 | 仅单元测试 | 同上；直链带约 900 秒有效的 CDN Cookie |
+| 139（和彩云） | 否 | 仅单元测试 | 同上；请求与应答按 AES-CBC 加解密 |
+| 123 云盘 | 是（账号密码） | 仅单元测试 | 同上；取链需 Bearer 与签名 |
+| 迅雷网盘 | 是（访问令牌） | 仅单元测试 | 同上；首次登录需短信验证码，故凭证是令牌 |
+| 百度网盘 | 是（BDUSS） | 仅单元测试 | 同上；取链需临时转存，取链后清理 |
+| 蓝奏云优享版 | — | 不支持 | 官方没有公开的解析接口 |
+
+**蓝奏云的实测记录：** 分享链接 `https://wwx.lanzoui.com/abc` 能列出文件 `站长工具箱.rar`；直链在 `zip3.webgetstore.com` 上，`rangeSupported: true`；带返回的请求头抓取该直链，得到 2,068,480 字节，开头是 `4d 5a`（zip 的魔数），服务端回 `accept-ranges: bytes`。该链接交给 Neat Download Manager 也被接受（任务目录增加一项，其日志里有带 URL 编码文件名的 GET）。
+
+**这个实测同时暴露了三处平台特性，别的适配器也要当心：**
+
+1. 蓝奏云的内层页面每次取到的 `sign` 是一次性的令牌，不能复用。
+2. 取链的端点是 `domain1`/`domain2` 的 `ajaxfile.php?file=<id>`，不是别的名字。
+3. 平台答应用的是 `text/json` 与 gzip，所以这一处必须显式接受压缩并解码。
+
+**取直链用到的平台内部常量来自第三方开源客户端 YunX 的实现**（百度的 `psign`/`devuid`、139 的 AES 密钥、蓝奏云的人机校验答案）。平台改版时这些常量可能失效，需要跟着更新。
+
+### 8.10 网盘文件下载：`netdisk_download`
+
+**用途：** 解析分享链接并把选中的文件加入下载队列。
+
+**输入：** `{ url, code?, paths, backend? }`。`paths` 必填（分享内的相对路径，至少一个）。`backend` 为 `builtin`（默认，由工作站自己分片下载）或 `ndm`（交给本机 Neat Download Manager）。
+
+**输出：** `taskIds[]`、`backend`、`platform`、`warnings[]`。
+
+**行为：**
+
+- 先解析分享、读出文件列表，再按 `paths` 取直链，然后为每个文件建一个下载任务。
+- 一个文件取链失败只记进 `warnings[]`，其余文件照常入队；一个都没取到直链时报 `TOOL_FAILED`。
+- 任务在后台跑，工具本身不等下载结束。
+
+**下载内核（`src/core/download/`）：**
+
+- **分片**：默认 8 路并发，每片一个 HTTP Range 请求。分片表（哪些片已完成）写在 `<stateDirectory>/downloads/<任务号>/segments.json`，**进程重启后从断点继续**。
+- **真实大小**：平台宣布的大小可能与实际字节数不符（实测某 rar 分享宣布 2,097,152 字节、实际只有 2,068,480 字节）。所以下载前先用 `Range: bytes=0-0` 问服务器真实大小，再据此分片；否则越过文件末尾的那一片会拿到整个文件，字节写错位置。
+- **直链过期**：直链失效（403/404/410）时报 `LinkExpiredError`，由下载管理器用任务的 `source` 重新取链后从断点继续，最多 3 次。适配器需要的是**分享码**而不是分享链接，所以从链接还原分享码再重建上下文。
+- **续传能力**：直链不支持续传时（`rangeSupported === false`），已有字节不能接着写，这种情况下任务失败并说明原因，不从头悄悄重来。
+- **并发**：下载任务默认 3 个同时跑，每个 8 路连接；排队、暂停、继续、删除都在下载任务页里操作。暂停与继续用"世代号"区分，新一轮运行不会覆盖旧一轮写下的状态。
+- **产出**：产物写入配置里的输出目录（默认 `sandbox/downloads`），文件名取用户看得懂的名字，同名文件自动加序号，不静默覆盖。
+- **进程重启**：上次退出时仍在下载的任务会被置为"已暂停"，等待用户继续。
+
+**交给 Neat Download Manager（`backend: 'ndm'`）：**
+
+- 通过本机 `ws://127.0.0.1:10007/download` 的扩展协议把链接推过去，协议报文里的编号键按下载器的格式拼装。请求头里的值带换行会被拒绝，避免把字段塞进报文。
+- 该协议不回任务号也不回报进度，所以推过去之后工作站不再跟踪这个下载。
+
+**限制：** 只处理分享里的文件，不做"转存到我的网盘"这类独立功能（百度的取链链路内部会临时转存，取链后立即清理）；下载第三方平台内容前请自行确认平台服务条款与版权授权范围。
+
 ## 9. 三种调用入口
 
 ### 9.1 本地 HTTP API
@@ -706,6 +828,12 @@ export interface EnvironmentReport {
 | `POST /api/tools/:name/run` | 执行 | 请求 `{ input: {...} }`，返回统一 `ToolResult` |
 | `GET /api/runs?limit=50` | 最近执行摘要 | 按开始时间倒序，限制为 1–100 |
 | `GET /api/integrations` | 本机接入说明 | 由真实项目路径生成的 MCP/CLI 示例与能力状态 |
+| `GET /api/downloads` | 下载任务列表 | 任务摘要，不含直链与请求头 |
+| `GET /api/downloads/:id` | 单个下载任务 | 同上；未知返回 404 |
+| `POST /api/downloads/:id/pause` | 暂停任务 | `{ paused }` |
+| `POST /api/downloads/:id/resume` | 继续任务 | `{ resumed }` |
+| `DELETE /api/downloads/:id` | 删除任务 | `{ removed }` |
+| `GET /api/downloads/events` | 下载任务事件流 | SSE，任务变化时推送 |
 
 运行接口状态映射：非法输入 400、拒绝访问 403、工具或输入文件不存在 404、输入规模超限 413、并发已满 429、超时 504、工具内部失败 500、成功 200。远端内容不支持或不可解析映射为 422；网络失败映射为 502。请求断开后的取消记录为 `CANCELLED`，不再向已关闭响应写数据。
 
@@ -722,6 +850,24 @@ npm run cli -- run text_stats --input '{"text":"Hello 世界"}'
 npm run cli -- run csv_summary --input '{"path":"samples/sales.csv","delimiter":","}'
 npm run cli -- run text_stats --input-file "D:/HenryChips/sandbox/samples/text-input.json"
 ```
+
+网盘凭证子命令（第 8.9、8.10 节新增）：
+
+```bash
+npm run cli -- credentials list
+npm run cli -- credentials set baidu --bduss-stdin < credential.txt
+npm run cli -- credentials set pan123 --username-stdin --password-stdin < credentials.txt
+npm run cli -- credentials set xunlei --token-stdin < token.txt
+npm run cli -- credentials clear baidu
+```
+
+- **凭证值只从标准输入读，不接受命令行参数。** 参数会进 shell 历史，也会进 npm 的持久调试日志（已实测 `%LOCALAPPDATA%\npm-cache\_logs\` 里的 `verbose argv` 记录了参数值）。
+- 凭证文件在 `<stateDirectory>/netdisk-credentials.json`，即 `.workstation/netdisk-credentials.json`。**不放进 `workstation.config.json`**，因为那个文件被 git 跟踪，写进去会在下次提交时进入仓库历史。文件权限 0600（Windows 上尽力而为）。
+- 每个平台接受的字段是固定的：百度 `bduss`；123 云盘 `username` + `password`；迅雷 `token`。**给某个平台写别的字段会被拒绝**，否则看起来配好了其实用不了。
+- 迅雷的凭证是访问令牌而不是账号密码：首次登录总要短信验证码，账号密码没法自动换取令牌。
+- 环境变量 `HENRY_NETDISK_<平台>_<字段>` 优先于文件，便于不落盘使用。
+- `credentials list` 只列出平台名与"配没配"（来自文件还是环境变量），**不列值**。
+- 平台名像 `__proto__` 或 `constructor` 这样的名字不是平台，`clear` 不会因为原型链上的同名键而谎报成功。
 
 - `--input` 与 `--input-file` 互斥。
 - 输入 JSON 文件是 CLI 的显式参数载体，由用户指定；工具自身的文件参数仍受工作目录限制。
@@ -803,6 +949,7 @@ export interface RunSummary {
 | 执行记录 | 最近运行摘要、来源、状态、耗时、刷新 |
 | AI 接入 | MCP 配置、CLI 用法、复制按钮、扩展工具步骤、实际能力状态 |
 | 服务器 | 中继连接状态、已连接设备与可用工具数、跨设备运行历史、给 AI 的接口说明（2026-11-03 新增） |
+| 下载任务 | 网盘下载任务的队列、进度、速度、暂停、继续与删除（2026-11-13 新增） |
 
 顶层布局采用左侧导航与主内容区；小屏切换为顶部导航或可展开菜单。首版不增加收藏、登录、主题切换、拖拽工作流等与核心目标无关的功能。
 
@@ -817,6 +964,13 @@ export interface RunSummary {
 7. 输入不存在路径再次执行，页面保留参数并显示可理解的错误。
 
 复制和下载必须真实可用；复制失败给出可手动选择的文本。工具切换或组件卸载时取消旧请求；旧请求结果不得覆盖新工具页面。
+
+**网盘结果与下载任务页（2026-11-13 新增）：**
+
+- 解析结果的面板单列一块"下载直链"：名称、大小、直链、是否支持续传，以及可复制与可下载的操作。
+- **浏览端拿不到提取码与 cookie**：下载任务的视图不含 `source` 与 `headers`，只有平台、文件名、状态、进度与速度。
+- 「下载任务」页通过 SSE（`GET /api/downloads/events`）订阅任务变化，SSE 不可用时降级为轮询。任务可暂停、继续、删除。
+- 任务属于这台机器，不属于打开它的浏览器标签页，所以不需要归属令牌，任何标签页都能查看与操作。
 
 ### 11.3 视觉与可访问性
 
@@ -1094,6 +1248,28 @@ MCP 测试必须真的启动项目进程并完成协议交互，不能只检查�
 - [x] 已确认的服务器条件写入第 20.7 节，未完成项（速率限制、缺少 `deviceToken` 时放行）标注在第 21 节与 `deploy/RELAY-DEPLOY.md`。
 - [x] `deploy/RELAY-DEPLOY.md` 写明数据目录放在 `/data`、部署所需文件、systemd 用法与公网暴露前必须做的事。
 
+### 任务 13：网盘分享解析与下载
+
+**文件：** `src/tools/netdisk/*`、`src/tools/netdisk/adapters/*`、`src/tools/netdisk-resolve.ts`、`src/tools/netdisk-download.ts`、`src/core/download/*`、`src/core/ndm/client.ts`、对应的 `tests/tools/netdisk-*` 与 `tests/core/download-*`。
+
+**产出接口：** 第 8.9、8.10 节的 `netdisk_resolve` 与 `netdisk_download`；`/api/downloads*` 系列接口；`credentials` CLI 子命令。
+
+- [x] 扩展公网客户端：流式写入、响应体上限在流式路径上生效、`getHead` 只读响应头、压缩应答的显式选择。
+- [x] 实现受限写入器（`open` / `writeAt` / `truncate` / `close`），空写入不推进文件长度。
+- [x] 实现分享链接识别（按解析后的主机名判断，10 个平台）与提取码提取。
+- [x] 实现会话层：按主机隔离的 cookie jar 与账号令牌、同主机请求间隔、调用方凭证头一律剥离。
+- [x] 实现凭证存储（`<stateDirectory>/netdisk-credentials.json`，0600）与 `credentials` CLI 子命令（值只走标准输入）。
+- [x] 实现适配器契约与蓝奏云适配器，并实测跑通一条真实分享。
+- [x] 实现 `netdisk_resolve` 工具（封闭的输出结构、单文件失败不影响其余、超过上限拒绝、失败原因去令牌）。
+- [x] 实现分片下载内核（真实大小探测、分片表持久化、续传、直链失效报 `LinkExpiredError`、真实错误不被兄弟分片的取消掩盖）。
+- [x] 实现下载任务管理器（排队、暂停、继续、删除、世代号、断点续传、重启后置为暂停）。
+- [x] 实现 `/api/downloads*` 接口与 `GET /api/downloads/events` 事件流。
+- [x] 实现 `netdisk_download` 工具与可选的 Neat Download Manager 后端。
+- [x] 实现前端结果面板与「下载任务」页。
+- [x] 实现其余八家适配器（光鸭、夸克、UC、115、139、123、迅雷、百度）。
+- [x] 文档回填（第 5、7.3、8.9、8.10、9.1、9.2、11、13、15 节与第 19 节记录）。
+- [ ] 未覆盖：只有蓝奏云一家在真实平台上端到端验证过（见 8.9 的平台状态表），其余八家按公开协议形状做了单元测试，**尚未对真实平台跑通**。取直链用到的平台内部常量（百度的 `psign`/`devuid`、139 的 AES 密钥、蓝奏云的人机校验答案）取自第三方开源客户端 YunX 的实现，随平台改版可能失效。
+
 ## 14. 脚本与命令约定
 
 以下脚本已写入项目配置；各项实际运行验证见第 19 节：
@@ -1119,6 +1295,8 @@ MCP 测试必须真的启动项目进程并完成协议交互，不能只检查�
 | `npm run relay:serve -- <配置>` | 在服务器上启动中继服务 |
 | `npm run relay:node` | 在设备上启动节点连接器，向中继报到并领取任务 |
 | `npm run relay:pair -- <地址> <配对码> <设备名> [--token <令牌>]` | 配对设备并写入配置 |
+| `npm run cli -- credentials list` | 列出已配置的网盘凭证平台（不列值） |
+| `npm run cli -- credentials set <平台> --<字段>-stdin` | 从标准输入写入某个平台的凭证值 |
 
 构建后的直接调用：
 
@@ -1149,6 +1327,10 @@ node "D:/HenryChips/dist/server/adapters/mcp/main.js" --config "D:/HenryChips/wo
 | 网页 | 表单到结果到历史 | 空状态、错误、连续点击、切换工具、窄屏、键盘 |
 | 中继 | 配对、注册、派单、回传、历史 | 配对码错误、令牌无效、设备离线、非法输入 |
 | 桌面外壳 | 窗口渲染、托盘菜单、关窗留驻、开机自启 | 服务未就绪、已有服务占用端口、缺构建产物 |
+| 分享文案识别 | 各平台的链接与提取码、整段文案 | 主机名不是平台子串、优享版、`解压密码`、提取码来源的优先次序 |
+| 直链解析 | 各平台的文件列表与直链 | 平台业务码、单文件失败、目录无直链、超过上限、凭证不出现在输出里 |
+| 下载任务生命周期 | 创建、暂停、继续、删除、续传 | 直链失效后重新取链、进程重启后从断点继续、真实大小与宣布大小不一致、不支持续传 |
+| 凭证存储 | 按平台写读、环境变量覆盖 | 错误的字段名、未知平台、`__proto__` 之类的平台名、文件被改坏 |
 
 测试用实际临时文件与真实子进程验证本项目行为；不以实现生成的期望值再次对照实现。外网测试不成为普通单元测试的前提，第三方协议的内部机制也不重复测试。
 
@@ -1332,6 +1514,21 @@ node "D:/HenryChips/dist/server/adapters/mcp/main.js" --config "D:/HenryChips/wo
 - 依赖审计从 14 处漏洞降到 0（升级 Electron 与 electron-builder，并锁定 `tar`、`make-fetch-happen`、`cacache`）。
 - 回归：`npm test` 111 项（110 通过、1 跳过）、`npm run test:web` 10 项、`npm run test:e2e` 20 项、`npm run test:desktop` 4 项、`npm run test:production` 1 项全部通过；类型检查与构建通过。
 
+
+### 2026-11-13：网盘分享解析与下载
+
+- 新增两个工具（`netdisk_resolve`、`netdisk_download`）与九个平台适配器，注册工具数从 12 增到 14。设计文档 `docs/superpowers/specs/2026-11-12-netdisk-resolve-and-download-design.md`，实施计划 `docs/superpowers/plans/2026-11-12-netdisk-resolve-and-download.md`。
+- **执行方式**：用户要求"全部做完后再审查"，所以取消了逐任务评审，改为全部实现完再统一审查；代价是评审发现的缺陷（如跨主机凭证泄漏、假绿的契约测试、解码路径挂死）要到很晚才暴露，所以每个任务仍然跑 `npm test`、`npm run typecheck` 与 `npm run test:web`。三个子代理在适配器上零产出（预算全花在找真实分享链接上），剩余适配器与文档由主线程直接写。
+- **真实平台验证**：只有蓝奏云端到端跑通。分享 `https://wwx.lanzoui.com/abc` 列出 `站长工具箱.rar`，直链在 `zip3.webgetstore.com` 上且支持续传，带返回的请求头抓取得到 2,068,480 字节、开头 `4d 5a`，Neat Download Manager 也接受该链接。**其余八家只有单元测试，未对真实平台验证。**
+- **实测暴露的平台特性**：蓝奏云的内层页面每次给的是一次性 `sign` 令牌；取链端点是 `domain1`/`domain2` 的 `ajaxfile.php?file=<id>`；平台答应用 `text/json` 与 gzip，所以该处必须显式接受压缩。
+- **最终审查发现并修掉的真缺陷**：
+  - **凭证从未送达平台（严重）**：会话层按主机隔离凭证，调用方传入的 `Cookie`/`Authorization` 一律剥离，而百度、123、迅雷恰好用这种方式传登录态，等于三家的登录态全部被丢掉。改为经 `setCookie`/`setAuthorization` 进入本域 jar。
+  - **123 云盘的字段名全错**：平台返回的是 `InfoList`/`FileId`/`Size`/`Type`，代码读的是 `list`/`fid`/`size`/`isDir`，列表永远为空；且文件密钥与 `Etag` 在同一个字段里（`S3KeyFlag|Etag|StorageNode`），需要拆开。
+  - **百度的转存参数错**：转存需要列表接口给出的 `shareid` 与 `uk`，代码用的是链接里的短码；直链也取自 `filemetas`，而设计要求的是 `locatedownload` 的明文通道（`encrypt=0`），否则拿到的是需要 AES-CTR 解密的通道。
+  - **直链失效后重取链拿不到分享码**：重取链的接线把分享链接当成了分享码传给适配器，九家里有七家会因此取不到链。改为从链接还原分享码再重建上下文。
+- **其他在本轮修掉的缺陷**：分片下载时平台宣布的大小与实际字节数不符（宣布 2,097,152、实际 2,068,480）导致越界的那一片拿到整个文件；解码路径在 socket 中途断开时永久挂死；分片的真实错误被兄弟分片的 `CANCELLED` 掩盖；限速断言量错了对象（比的是预留时刻而不是到达时刻）造成偶发失败；`解压密码` 劫持了分享提取码；识别器按链接文本做子串匹配，`example.com/pan.quark.cn/s/x` 会被认成夸克。
+- **凭证的处理**：`credentials` CLI 的值只从标准输入读。原先 `credentials set baidu --bduss <值>` 会把凭证写进 npm 的持久调试日志（`%LOCALAPPDATA%\npm-cache\_logs\` 的 `verbose argv`），已实测确认。凭证文件放在 `.workstation/netdisk-credentials.json` 而不是 `workstation.config.json`，因为后者被 git 跟踪。
+- **回归**：`npm test` 353 项（352 通过、1 跳过、0 失败）；`npm run typecheck` 通过；`npm run test:web` 10 项通过。新增的测试都用变异检验确认过有辨别力（改回错误行为必然失败）。
 
 ## 20. 三端扩展的架构调研（2026-11-03）
 

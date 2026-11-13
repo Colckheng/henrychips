@@ -34,7 +34,7 @@
 | 环境探测 | `src/core/process-probe.ts` `createProcessProbe` | 只跑固定的 `git --version`（`shell: false`，3 秒超时），不接收任意命令 |
 | 桌面/网页互通 | `src/core/opener.ts` `openDirectory` | 结果面板的「打开输出文件夹」只打开配置里的输出目录 |
 
-### 已注册的 12 个工具（`src/tools/`，注册于 `src/tools/index.ts`）
+### 已注册的 13 个工具（`src/tools/`，注册于 `src/tools/index.ts`）
 
 | 工具 | 文件 | 能力 | 说明 |
 | --- | --- | --- | --- |
@@ -50,8 +50,27 @@
 | `bilibili_video` | `bilibili-video.ts` | `network:public` `files:write` | 解析 B 站稿件与媒体直链；先取 `buvid3` cookie，再调 `view`/`playurl`；DASH 可分离音轨；CDN 放行 80/443/8080/8082 |
 | `douyin_video` | `douyin-video.ts` + `douyin-core.ts` | `network:public` `files:write` `browser:local` | 解析抖音作品：标题、作者、封面、视频/音轨直链，可分别保存 |
 | `douyin_nowatermark` | `douyin-nowatermark.ts` | `network:public` `files:write` `browser:local` | 对比平台播放地址（无水印）与下载地址（带 `watermark=1`），可单独保存无水印视频或音轨 |
+| `netdisk_share` | `netdisk-share.ts` + `netdisk/adapters/*` | `network:public` `files:write` `downloader:local` | 解析网盘分享链接，列出分享内的文件并给出已验证的下载直链与所需请求头；网页上勾选文件即可下载（分片 + 断点续传），也可推给本机 Neat Download Manager。支持蓝奏云、光鸭云盘、夸克网盘、UC 网盘、115 网盘、139（和彩云）、123 云盘、迅雷网盘、百度网盘 |
 
 > 抖音取数靠 `src/core/douyin-session.ts`：用 `playwright-core` 驱动**本机已安装的 Chrome** 做一次性引导，抓到 `uifid` 与签名参数模板后交给 `abogus` 自签名直连接口；会话缓存在状态目录 `douyin-session.json`（约 6 小时）。
+
+### 网盘分享解析与下载（`src/tools/netdisk/`、`src/core/download/`）
+
+一条分享链接进来，先识别平台（按解析后的主机名判断，不按链接文本做子串匹配），再读出分享里的文件，最后给出**已验证的下载直链**和这份直链需要的请求头（`Referer`/`Cookie`/`User-Agent`/`Origin`）——只给 URL 会被 403。
+
+**下载**由工作站自己做（`src/core/download/`）：默认 8 路并发分片，分片表写在状态目录里，**进程重启后从断点继续**。下载前会先问服务器真实大小，因为平台宣布的大小可能与实际字节数不符（实测某 rar 分享宣布 2,097,152 字节、实际只有 2,068,480 字节）；不按真实大小分片，越过文件末尾的那一片会拿到整个文件，字节写错位置。
+
+**网盘凭证**：百度的取链要 BDUSS，123 云盘要账号密码，迅雷要访问令牌（首次登录总要短信验证码，所以账号密码没法自动换取令牌）。凭证文件在状态目录 `netdisk-credentials.json`（权限 0600，已在 `.gitignore` 里），**不要写进 `workstation.config.json`**——那个文件被 git 跟踪。
+
+```bash
+npm run cli -- credentials set baidu --bduss-stdin < credential.txt
+npm run cli -- credentials set pan123 --username-stdin --password-stdin < credentials.txt
+npm run cli -- credentials set xunlei --token-stdin < token.txt
+npm run cli -- credentials list
+npm run cli -- credentials clear baidu
+```
+
+**凭证值只从标准输入读，不接受命令行参数**——参数会进 shell 历史，也会进 npm 的持久调试日志。环境变量 `HENRY_NETDISK_<平台>_<字段>` 优先于文件，便于不落盘使用。凭证值不出现在工具输出、运行摘要与日志里，输出里只有 `credentialUsed` 这个布尔值。
 
 ### 三个调用入口
 
@@ -62,6 +81,8 @@
 | MCP | `src/adapters/mcp/server.ts`、`main.ts` | stdio 传输，把 **全部 12 个工具**注册为 MCP 工具，带 `structuredContent` 与 `readOnlyHint`/`destructiveHint`/`openWorldHint` 注解 |
 
 ### HTTP API（`src/adapters/http/routes.ts`）
+
+除工具的通用接口外，下载任务另有 `GET /api/downloads`、`GET /api/downloads/:id`、`POST /api/downloads/:id/pause`、`POST /api/downloads/:id/resume`、`DELETE /api/downloads/:id` 与事件流 `GET /api/downloads/events`（SSE，不可用时降级轮询）。任务属于这台机器，不属于打开它的浏览器标签页，所以不需要归属令牌。
 
 `GET /api/health`、`GET /api/tools`、`GET /api/tools/:name`、`POST /api/tools/:name/run`、`GET /api/node/identity`、`GET /api/integrations`、`GET /api/runs`、`GET /api/runs/latest`、`GET /api/runs/:runId/result`、`GET /api/runs/:runId/progress`、`GET /api/runs/:runId/events`（SSE）、`POST /api/runs/:runId/cancel`、`POST /api/output/open`、`GET /api/relay/status`。
 
@@ -86,6 +107,15 @@ Electron 45.2.1 主进程里**直接跑服务**（不 spawn 子进程，打包�
 - **设备端**：`src/adapters/relay/main.ts` 节点连接器（**始终由设备主动外连，中继不回调**），`src/adapters/relay/pair.ts` 配对并把凭据写回 `workstation.config.json` 的 `relay` 段。
 - **鉴权**：`pairCode` 换设备令牌；可选 `deviceToken` 用 `timingSafeEqual` 做 Bearer 校验。
 - **边界**：中继**不执行任何工具**，只登记、路由和回传摘要；产物始终留在设备本地。
+
+### 网盘与下载
+
+- `src/tools/netdisk/share-link.ts` 分享文案 → 平台、分享码、提取码（10 类平台）
+- `src/tools/netdisk/session.ts` 会话层：Cookie 与账号令牌**按主机隔离**，同主机请求间隔 250ms
+- `src/tools/netdisk/credentials.ts` 凭证存储（`<stateDirectory>/netdisk-credentials.json`，0600）
+- `src/tools/netdisk/adapters/` 九家平台的协议适配（蓝奏云、光鸭、夸克、UC、115、139、123、迅雷、百度）
+- `src/core/download/` 分片下载内核、分片表持久化与下载任务管理器
+- `src/core/ndm/client.ts` 本机 Neat Download Manager 对接
 
 ### 沙箱隔离
 
@@ -384,3 +414,8 @@ npm run relay:node
 **未指定。** 根 `package.json` 没有 `license` 字段，且标记为 `"private": true`。使用前请与仓库作者确认授权方式。
 
 > 附带的第三方工具（B 站 / 抖音解析）只处理公开内容，不绕过登录或付费限制；下载第三方平台视频前请自行确认平台服务条款与版权授权范围。
+
+- 网盘取直链用到的平台内部常量（百度的 `psign`、139 的 AES 密钥、蓝奏云的人机校验答案）取自第三方开源客户端 YunX 的实现，**平台改版时可能失效**。
+- 九家网盘平台里**蓝奏云与夸克**在真实平台上端到端验证过，其余七家按公开协议形状做了单元测试，**尚未对真实平台跑通**。
+- 真实平台验证需要**关掉本机的代理**（FlClash 的 fake-IP 模式把所有域名解析到 `198.18.0.0/15` 保留段，会被公网客户端的地址检查挡下，既有的网页抓取工具也一样）。
+- 下载第三方平台内容前，请自行确认平台服务条款与版权授权范围。
