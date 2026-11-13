@@ -10,7 +10,7 @@ import { ToolError } from './errors.js';
 import { NetdiskSession } from '../tools/netdisk/session.js';
 import { adaptersByPlatform } from '../tools/netdisk/adapters/index.js';
 import { resolveCredential } from '../tools/netdisk/credentials.js';
-import type { NetdiskFile } from '../tools/netdisk/types.js';
+import { contextForRefresh, fileForRefresh } from '../tools/netdisk/refresh.js';
 
 export function createRuntime(config: WorkstationConfig) {
   const registry = createRegistry();
@@ -32,23 +32,12 @@ export function createRuntime(config: WorkstationConfig) {
       if (!adapter) throw new ToolError('TOOL_FAILED', '该平台没有可用的适配器，无法重新取链。');
       const signal = new AbortController().signal;
       const session = new NetdiskSession({ http, signal });
-      const context = {
+      const context = contextForRefresh(task.source, {
         session,
-        shareId: task.source.shareUrl,
-        shareUrl: task.source.shareUrl,
-        code: task.source.code,
         credential: resolveCredential(task.platform, config.stateDirectory),
         signal,
-        reportProgress: () => {},
-      };
-      const file: NetdiskFile = {
-        id: task.source.fileId,
-        path: task.source.filePath,
-        name: task.fileName,
-        sizeBytes: task.sizeBytes,
-        isDirectory: false,
-      };
-      return adapter.link(context, file);
+      });
+      return adapter.link(context, fileForRefresh(task.source, task.fileName, task.sizeBytes));
     },
   });
   const ndm = new NdmClient();

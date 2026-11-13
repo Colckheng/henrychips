@@ -24,10 +24,11 @@ export type XunleiAdapter = NetdiskAdapter & {
 /**
  * The headers of a request to the platform. The guest mode does not carry an
  * authorization header at all: a stale one makes the platform answer
- * "unauthenticated" instead of serving the share.
+ * "unauthenticated" instead of serving the share. The token of the user
+ * reaches the platform through the jar of the session instead.
  */
-function panHeaders(accessToken?: string): Record<string, string> {
-  const headers: Record<string, string> = {
+function panHeaders(): Record<string, string> {
+  return {
     Accept: 'application/json',
     'User-Agent': WEB_UA,
     'X-Device-Id': DEVICE_ID,
@@ -36,8 +37,6 @@ function panHeaders(accessToken?: string): Record<string, string> {
     Origin: 'https://pan.xunlei.com',
     Referer: 'https://pan.xunlei.com/',
   };
-  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
-  return headers;
 }
 
 /**
@@ -54,6 +53,19 @@ function accessTokenOf(context: AdapterContext): string {
       '迅雷取直链需要登录态，而账号密码登录会要求短信验证码，无法自动完成。请在配置里提供迅雷的访问令牌。',
     );
   }
+  return token;
+}
+
+/**
+ * Puts the token of the user into the jar of the host.
+ *
+ * The session only hands out the credentials of the host a request is aimed
+ * at, so a token that is passed as a plain header would be dropped on the way
+ * out. The jar is the only way it reaches the platform.
+ */
+function signIn(context: AdapterContext): string {
+  const token = accessTokenOf(context);
+  context.session.setAuthorization(PAN_BASE, `Bearer ${token}`);
   return token;
 }
 
@@ -154,8 +166,8 @@ export const xunleiAdapter: XunleiAdapter = {
   },
 
   async link(context: AdapterContext, file: NetdiskFile): Promise<NetdiskLink> {
-    const accessToken = accessTokenOf(context);
-    const response = await context.session.get(`${FILES_URL}/${encodeURIComponent(file.id)}`, panHeaders(accessToken));
+    signIn(context);
+    const response = await context.session.get(`${FILES_URL}/${encodeURIComponent(file.id)}`, panHeaders());
     const answer = (response.data ?? {}) as Record<string, unknown>;
     const links = answer.links && typeof answer.links === 'object' ? answer.links as Record<string, unknown> : {};
     const url = typeof links.url === 'string' ? links.url : typeof links.web_content_link === 'string' ? links.web_content_link : '';

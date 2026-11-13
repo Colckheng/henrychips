@@ -28,6 +28,10 @@ export type Pan123Adapter = NetdiskAdapter & {
   makeSign(path: string, ts: number): { authKey: string; authValue: string };
   /** Reads the entries of a share. */
   parseEntries(data: unknown): NetdiskFile[];
+  /** Splits the token of a member into the key and the tag of the object. */
+  decodeFileToken(fidToken: string): { s3KeyFlag: string; etag: string };
+  /** Signs in and puts the token into the jar of the host. */
+  signIn(context: AdapterContext): Promise<string>;
   /** Unwraps the address of a file from the two shapes the platform uses. */
   decodeDownloadUrl(downloadUrl: string): string | null;
   /** Turns the codes of the platform into a message. */
@@ -75,26 +79,42 @@ export const pan123Adapter: Pan123Adapter = {
   parseEntries(data) {
     if (!data || typeof data !== 'object') return [];
     const root = data as Record<string, unknown>;
-    const raw = Array.isArray(root.list) ? root.list : [];
+    // The platform names the list of the share "InfoList" and the id of a
+    // member "FileId", so the shape of the answer is not the one of the
+    // personal drive.
+    const raw = Array.isArray(root.InfoList) ? root.InfoList : [];
     const files: NetdiskFile[] = [];
     for (const item of raw) {
       if (!item || typeof item !== 'object') continue;
       const entry = item as Record<string, unknown>;
-      const id = typeof entry.fid === 'string' ? entry.fid : '';
+      const id = typeof entry.FileId === 'string' ? entry.FileId : '';
       if (!id) continue;
-      const name = typeof entry.fileName === 'string' ? entry.fileName : id;
-      const isDirectory = entry.isDir === true || entry.isDir === 1;
-      const size = Number(entry.size ?? 0);
+      const name = typeof entry.FileName === 'string' ? entry.FileName : id;
+      // The kind of a member is stated by its type: one is a folder.
+      const isDirectory = Number(entry.Type ?? 0) === 1;
+      const size = Number(entry.Size ?? 0);
       files.push({
         id,
         path: isDirectory ? `${name}/` : name,
         name,
         sizeBytes: !isDirectory && Number.isFinite(size) && size > 0 ? size : null,
         isDirectory,
-        modifiedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : undefined,
+        modifiedAt: typeof entry.UpdateAt === 'string' ? entry.UpdateAt : undefined,
+        // The download needs the key of the object and the tag of it, and
+        // the platform states both in one field, separated by a bar.
+        fidToken: `${typeof entry['S3KeyFlag'] === 'string' ? entry['S3KeyFlag'] : ''}|${typeof entry.Etag === 'string' ? entry.Etag : ''}|${typeof entry.StorageNode === 'string' ? entry.StorageNode : ''}`,
       });
     }
     return files;
+  },
+
+  /**
+   * Splits the token of a member into the key of the object and the tag of
+   * it. The platform states both in one field, separated by a bar.
+   */
+  decodeFileToken(fidToken: string): { s3KeyFlag: string; etag: string } {
+    const parts = fidToken.split('|');
+    return { s3KeyFlag: parts[0] ?? '', etag: parts[1] ?? '' };
   },
 
   decodeDownloadUrl(downloadUrl) {
@@ -126,7 +146,14 @@ export const pan123Adapter: Pan123Adapter = {
     return message || `123 云盘返回了错误码 ${code}。`;
   },
 
-  async list(context: AdapterContext): Promise<NetdiskShare> {
+  /**
+   * Signs in and hands the token to the jar of the host.
+   *
+   * The session only hands out the credentials of the host a request is
+   * aimed at, so a token that is passed as a plain header would be dropped on
+   * the way out. The jar is the only way it reaches the platform.
+   */
+  async signIn(context: AdapterContext): Promise<string> {
     const credential = context.credential;
     if (!credential?.username || !credential.password) {
       throw new ToolError('ACCESS_DENIED', '123 云盘需要登录态，请先配置账号与密码。');
@@ -142,7 +169,14 @@ export const pan123Adapter: Pan123Adapter = {
     const signInData = signIn.data as Record<string, unknown> | undefined;
     const token = signInData && typeof signInData.token === 'string' ? signInData.token : '';
     if (!token) throw new ToolError('TOOL_FAILED', '123 云盘没有返回登录令牌，请检查账号与密码。');
+    for (const host of [API_BASE, DOWNLOAD_BASE, USER_BASE]) {
+      context.session.setAuthorization(host, `Bearer ${token}`);
+    }
+    return token;
+  },
 
+  async list(context: AdapterContext): Promise<NetdiskShare> {
+    await this.signIn(context);
     const path = '/b/api/share/get';
     const sign = this.makeSign(path, Math.floor(Date.now() / 1000));
     const query = new URLSearchParams({
@@ -156,7 +190,6 @@ export const pan123Adapter: Pan123Adapter = {
     });
     const response = await context.session.get(`${SHARE_GET_URL}?${query.toString()}`, {
       ...headersOf(),
-      Authorization: `Bearer ${token}`,
       'auth-key': sign.authKey,
       'auth-value': sign.authValue,
     });
@@ -170,31 +203,23 @@ export const pan123Adapter: Pan123Adapter = {
   },
 
   async link(context: AdapterContext, file: NetdiskFile): Promise<NetdiskLink> {
-    const credential = context.credential;
-    if (!credential?.username || !credential.password) {
-      throw new ToolError('ACCESS_DENIED', '123 云盘需要登录态，请先配置账号与密码。');
-    }
-    const signIn = await context.session.postJson(SIGN_IN_URL, {
-      account: credential.username.trim(),
-      password: credential.password,
-      app_version: APP_VERSION,
-      platform: PLATFORM,
-    }, headersOf());
-    const signInData = signIn.data as Record<string, unknown> | undefined;
-    const token = signInData && typeof signInData.token === 'string' ? signInData.token : '';
-    if (!token) throw new ToolError('TOOL_FAILED', '123 云盘没有返回登录令牌，请检查账号与密码。');
-
+    await this.signIn(context);
     const path = '/b/api/share/download/info';
     const sign = this.makeSign(path, Math.floor(Date.now() / 1000));
+    // The download asks for the key of the object and the tag of it, and the
+    // listing states both in one field.
+    const token = this.decodeFileToken(file.fidToken ?? '');
+    if (!token.s3KeyFlag || !token.etag) {
+      throw new ToolError('TOOL_FAILED', '123 云盘没有返回文件密钥，请重新解析分享。');
+    }
     const response = await context.session.postJson(SHARE_DOWNLOAD_INFO_URL, {
       ShareKey: context.shareId,
       FileID: file.id,
-      S3KeyFlag: file.fidToken ?? '',
+      S3KeyFlag: token.s3KeyFlag,
       Size: file.sizeBytes ?? 0,
-      Etag: file.fidToken ?? '',
+      Etag: token.etag,
     }, {
       ...headersOf(),
-      Authorization: `Bearer ${token}`,
       'auth-key': sign.authKey,
       'auth-value': sign.authValue,
     });
