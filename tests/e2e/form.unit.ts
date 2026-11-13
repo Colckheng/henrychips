@@ -42,3 +42,24 @@ test('text is preserved verbatim and undeclared input is never sent', () => {
   assert.deepEqual(serializeInput(tool, { path: 'file.pdf', start: 1, note: ' A\n中 ', enabled: true, extra: 'drop' }),
     { path: 'file.pdf', start: 1, note: ' A\n中 ', enabled: true });
 });
+
+const listTool: ToolDescription = {
+  ...tool,
+  name: 'list_test',
+  fields: [
+    { name: 'path', label: 'Path', type: 'relative-path' },
+    { name: 'paths', label: 'Paths', type: 'textarea' },
+  ],
+  inputSchema: { type: 'object', required: ['path'], properties: {
+    path: { type: 'string' }, paths: { type: 'array', items: { type: 'string' } },
+  } },
+};
+
+test('a textarea of a list is sent as the list of its lines', () => {
+  assert.deepEqual(serializeInput(listTool, { path: 'a.pdf', paths: 'first.txt\nsecond.txt' }),
+    { path: 'a.pdf', paths: ['first.txt', 'second.txt'] });
+});
+
+test('a blank textarea of a list is omitted instead of sent as an empty list', () => {
+  assert.deepEqual(serializeInput(listTool, { path: 'a.pdf', paths: '  \n ' }), { path: 'a.pdf' });
+});

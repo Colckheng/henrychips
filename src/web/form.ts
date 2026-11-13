@@ -22,17 +22,35 @@ export function initialValues(tool: ToolDescription, example?: Record<string, un
   return Object.fromEntries(tool.fields.map(field => {
     const value = example?.[field.name] ?? properties[field.name]?.default;
     const scalar = typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
-    return [field.name, scalar ? value : field.type === 'checkbox' ? false : ''];
+    if (scalar) return [field.name, value];
+    // A list is edited as one path per line, so the example of a list has to
+    // be shown the way the field is filled in.
+    if (Array.isArray(value)) return [field.name, value.filter(item => typeof item === 'string').join('\n')];
+    return [field.name, field.type === 'checkbox' ? false : ''];
   }));
+}
+
+/**
+ * A textarea of a list holds one entry per line, so the text of the field is
+ * the list of its lines. The schema says the field is a list, and the field
+ * says how a list is written, so the conversion belongs here.
+ */
+function listOf(text: string): string[] {
+  return text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
 }
 
 export function serializeInput(tool: ToolDescription, values: FormValues): Record<string, unknown> {
   const required = new Set(requiredFields(tool));
+  const properties = propertiesOf(tool);
   const input: Record<string, unknown> = {};
   for (const field of tool.fields) {
     const value = values[field.name];
     const blank = value === undefined || (typeof value === 'string' && !value.trim());
     if (blank && !required.has(field.name)) continue;
+    if (properties[field.name]?.type === 'array') {
+      input[field.name] = typeof value === 'string' ? listOf(value) : value;
+      continue;
+    }
     input[field.name] = field.type === 'number' && !blank ? Number(value) : value ?? '';
   }
   return input;
