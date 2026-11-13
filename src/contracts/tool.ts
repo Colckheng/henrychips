@@ -1,5 +1,5 @@
 export type Category = 'files' | 'documents' | 'web' | 'data' | 'developer' | 'text' | 'media';
-export type Capability = 'files:read' | 'files:write' | 'network:public' | 'process:probe' | 'browser:local';
+export type Capability = 'files:read' | 'files:write' | 'network:public' | 'process:probe' | 'browser:local' | 'downloader:local';
 export interface FieldDefinition {
   name: string;
   label: string;

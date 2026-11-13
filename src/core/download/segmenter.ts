@@ -107,17 +107,29 @@ export async function downloadSegmented(link: NetdiskLink, options: SegmenterOpt
   };
 
   try {
-    await Promise.all(table.segments.map(segment => runSegment(segment)));
+    // A failing segment ends the whole download, so the other segments are
+    // stopped right away. Every segment has to settle before the file handle
+    // is closed, so none of them writes to a closed handle.
+    const outcomes = await Promise.allSettled(table.segments.map(segment => runSegment(segment)));
+    const failure = outcomes.find(outcome => outcome.status === 'rejected');
+    if (failure) throw failure.reason;
     report(true);
     return { bytesWritten: total, totalBytes: total, rangeSupported: useRange, table };
-  } catch (error) {
-    stopped.abort();
-    throw error;
   } finally {
     await handle.close();
   }
 
   async function runSegment(segment: Segment): Promise<void> {
+    if (segment.done) return;
+    try {
+      await fetchSegment(segment);
+    } catch (error) {
+      stopped.abort();
+      throw error;
+    }
+  }
+
+  async function fetchSegment(segment: Segment): Promise<void> {
     if (segment.done) return;
     for (let attempt = 1; ; attempt++) {
       if (signal.aborted) throw new ToolError('CANCELLED', '下载已取消。');

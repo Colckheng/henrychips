@@ -14,7 +14,7 @@ export const categories = {
 export const categoryEntries = Object.entries(categories) as [Category, typeof categories[Category]][];
 export const capabilityLabels: Record<Capability, string> = {
   'files:read': '读取工作区文件', 'files:write': '写入输出目录', 'network:public': '访问公开网页',
-  'process:probe': '检查本机环境', 'browser:local': '调用本机浏览器',
+  'process:probe': '检查本机环境', 'browser:local': '调用本机浏览器', 'downloader:local': '调用本机下载器',
 };
 
 export function formatNumber(value: unknown): string {

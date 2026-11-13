@@ -13,6 +13,8 @@ import { RunStore } from '../../src/core/run-store.js';
 import { loadConfig } from '../../src/core/config.js';
 import { buildApp } from '../../src/adapters/http/app.js';
 import { createMcpServer } from '../../src/adapters/mcp/server.js';
+import { DownloadManager } from '../../src/core/download/manager.js';
+import { createPublicHttp } from '../../src/core/public-http.js';
 
 test('one registration exposes a new tool to HTTP and MCP and forwards MCP cancellation', { timeout: 5000 }, async t => {
   const state = await mkdtemp(path.join(tmpdir(), 'workstation-discovery-'));
@@ -33,7 +35,8 @@ test('one registration exposes a new tool to HTTP and MCP and forwards MCP cance
   const cancellationSaved = Promise.withResolvers<void>();
   const append = store.append.bind(store);
   store.append = async summary => { await append(summary); if (summary.status === 'cancelled') cancellationSaved.resolve(); };
-  const runtime = { registry, store, executor: new ToolExecutor(registry, config, store) };
+  const downloads = new DownloadManager({ http: createPublicHttp(config.limits.webBytes), stateDirectory: config.stateDirectory, outputDirectory: config.outputDirectory, outputBytesLimit: config.limits.outputBytes });
+  const runtime = { registry, store, executor: new ToolExecutor(registry, config, store), downloads };
   const app = await buildApp(config, { runtime });
   const server = createMcpServer(runtime);
   const client = new Client({ name: 'extension-test', version: '1.0.0' });

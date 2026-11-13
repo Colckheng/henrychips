@@ -11,6 +11,8 @@ import { ToolRegistry } from '../../src/core/registry.js';
 import { ToolExecutor } from '../../src/core/executor.js';
 import { RunStore } from '../../src/core/run-store.js';
 import { loadConfig } from '../../src/core/config.js';
+import { DownloadManager } from '../../src/core/download/manager.js';
+import { createPublicHttp } from '../../src/core/public-http.js';
 
 test('a disconnected client no longer stops the work, but an explicit cancel does', { timeout: 8000 }, async t => {
   const state = await mkdtemp(path.join(tmpdir(), 'workstation-cancel-'));
@@ -31,7 +33,8 @@ test('a disconnected client no longer stops the work, but an explicit cancel doe
   const originalAppend = store.append.bind(store);
   store.append = async summary => { await originalAppend(summary); recorded.resolve(); };
   const executor = new ToolExecutor(registry, config, store);
-  const app = await buildApp(config, { runtime: { registry, store, executor } });
+  const downloads = new DownloadManager({ http: createPublicHttp(config.limits.webBytes), stateDirectory: config.stateDirectory, outputDirectory: config.outputDirectory, outputBytesLimit: config.limits.outputBytes });
+  const app = await buildApp(config, { runtime: { registry, store, executor, downloads } });
   t.after(async () => { await app.close(); await rm(state, { recursive: true, force: true }); });
   const address = await app.listen({ host: '127.0.0.1', port: 0 });
   const req = httpRequest(`${address}/api/tools/wait_for_cancel/run`, { method: 'POST', headers: { host: '127.0.0.1:4318', 'content-type': 'application/json' } });
