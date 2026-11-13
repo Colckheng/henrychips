@@ -305,6 +305,10 @@ test('takes the download endpoint and the keys of the page of the platform', asy
   assert.equal(link.headers.Origin, 'https://developer4.lanrar.com');
   assert.equal(link.headers['User-Agent']?.includes('Chrome'), true);
   assert.equal(Object.keys(link.headers).includes('Authorization'), false);
+  // The node only serves the file to a request that carries its own cookie.
+  // The cookie lives in the jar of the session, and the jar does not travel
+  // with the link, so the link has to carry it.
+  assert.equal(link.headers.Cookie, 'down_ip=1');
   // The endpoint of the platform is the one the page declares, and the key of
   // the request is the value of "ajaxdata".
   const posted = calls.find(call => call.startsWith('POST https://apifile.woozooo.com/ajaxfile.php?file=6513996'));

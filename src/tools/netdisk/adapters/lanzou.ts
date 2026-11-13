@@ -310,8 +310,11 @@ export const lanzouAdapter: LanzouAdapter = {
       path: file.path, name: file.name, sizeBytes: file.sizeBytes,
       url: verified.url,
       // The headers belong to the node that handed out the link, because the
-      // node is the page the download starts from.
-      headers: { Referer: `${node.protocol}//${node.host}/`, Origin: `${node.protocol}//${node.host}`, 'User-Agent': WEB_UA },
+      // node is the page the download starts from. The node only serves the
+      // file to a request that carries its own cookie, and the cookie lives
+      // in the jar of the session, which does not travel with the link. So
+      // the cookie is put into the headers of the link itself.
+      headers: { Referer: `${node.protocol}//${node.host}/`, Origin: `${node.protocol}//${node.host}`, 'User-Agent': WEB_UA, Cookie: 'down_ip=1' },
       rangeSupported: verified.rangeSupported,
       source: { platform: 'lanzou', shareUrl: context.shareUrl, code: context.code, filePath: file.path, fileId },
     };
