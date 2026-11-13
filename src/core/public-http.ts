@@ -396,7 +396,7 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
     async getJson(value, signal, options) {
       try {
         const result = await fetchPublic(value, signal, 'json', options);
-        return { finalUrl: result.finalUrl, data: result.data, status: result.status };
+        return { finalUrl: result.finalUrl, data: result.data, status: result.status, setCookie: result.setCookie };
       } catch (error) {
         checkAbort(signal);
         if (error instanceof ToolError) throw error;
@@ -437,7 +437,7 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
       try {
         const body = new URLSearchParams(fields).toString();
         const result = await fetchPublic(url, signal, 'json', { ...options, method: 'POST', body, contentType: 'application/x-www-form-urlencoded' });
-        return { finalUrl: result.finalUrl, data: result.data, status: result.status };
+        return { finalUrl: result.finalUrl, data: result.data, status: result.status, setCookie: result.setCookie };
       } catch (error) {
         checkAbort(signal);
         if (error instanceof ToolError) throw error;
@@ -449,7 +449,7 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
         const result = await fetchPublic(url, signal, 'json', {
           ...options, method: 'POST', body: JSON.stringify(body), contentType: 'application/json',
         });
-        return { finalUrl: result.finalUrl, data: result.data, status: result.status };
+        return { finalUrl: result.finalUrl, data: result.data, status: result.status, setCookie: result.setCookie };
       } catch (error) {
         checkAbort(signal);
         if (error instanceof ToolError) throw error;

@@ -1,4 +1,5 @@
 import { ToolError } from '../../../core/errors.js';
+import { cookieValue } from '../session.js';
 import type { AdapterContext, NetdiskAdapter, NetdiskFile, NetdiskLink, NetdiskShare } from '../types.js';
 
 const WEB_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -166,11 +167,18 @@ export const ucAdapter: UcAdapter = {
     const entry = item && typeof item === 'object' ? item as Record<string, unknown> : {};
     const url = typeof entry.download_url === 'string' ? entry.download_url : '';
     if (!url) throw new ToolError('TOOL_FAILED', 'UC 网盘没有返回下载地址。');
-    // The CDN refuses the download without the guest token that came with
-    // this very answer, so it has to travel with the link.
-    const guestToken = this.readGuestToken(answer);
+    // The platform hands out the token of the guest in the `Set-Cookie` of
+    // the answer, and the token is bound to the very answer it came with.
+    // The token has to travel with a request to the CDN, which is a
+    // different host, so it cannot stay in the jar of the host that
+    // answered.
+    const guestToken = this.readGuestToken(answer)
+      || cookieValue(response.setCookie, '__pugs')
+      || '';
     const headers: Record<string, string> = { ...headersOf(), 'User-Agent': WEB_UA };
     if (guestToken) {
+      // The CDN refuses the download without the guest token, so it has to
+      // travel with the link.
       headers.Cookie = `__pugs=${guestToken}`;
       context.session.setCookie(url, '__pugs', guestToken);
     }

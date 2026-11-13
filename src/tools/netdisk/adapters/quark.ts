@@ -1,4 +1,5 @@
 import { ToolError } from '../../../core/errors.js';
+import { cookieValue } from '../session.js';
 import type { AdapterContext, NetdiskAdapter, NetdiskFile, NetdiskLink, NetdiskShare } from '../types.js';
 
 const WEB_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -7,7 +8,7 @@ const API_BASE = 'https://drive-pc.quark.cn';
 const WEB_ORIGIN = 'https://pan.quark.cn';
 const PAGE_SIZE = 100;
 /** The cookie of the guest. The CDN of the platform refuses a download without it. */
-const GUEST_COOKIE = 'guest_pugs';
+const GUEST_COOKIE = '__pugs';
 /** The business code that says the limit of the guest was hit. */
 const CODE_GUEST_LIMIT = 23018;
 /** The business code that says the session of the platform is not valid anymore. */
@@ -170,12 +171,12 @@ export const quarkAdapter: QuarkAdapter = {
       url: textOf(first.download_url),
       fileName: textOf(first.file_name),
       sizeBytes: sizeOf(first.size),
-      // The platform repeats the token of the guest at the top level of the
-      // answer, so both places are read.
-      guestToken: textOf(first.guest_pugs) || textOf(root.guest_pugs),
+      // The token of the guest comes with the answer. The platform repeats it
+      // in the body of the answer and in the cookies of it, so both places
+      // are read.
+      guestToken: textOf(first.guest_pugs) || textOf(root.guest_pugs) || textOf(root.guestToken),
     };
   },
-
   describeError(code, message) {
     return describeErrorOf(code, message);
   },
@@ -189,6 +190,11 @@ export const quarkAdapter: QuarkAdapter = {
     if (code !== 0) {
       throw failureOf(code, textOf(answer.message) || textOf(answer.msg));
     }
+    // The platform hands out the token of the guest in the cookies of the
+    // answer. The token is bound to the very answer it came with, so it is
+    // read here and travels with the link.
+    const guestToken = cookieValue(response.setCookie, GUEST_COOKIE);
+    if (guestToken) answer.guestToken = guestToken;
     return answer;
   },
 
@@ -340,12 +346,20 @@ export const quarkAdapter: QuarkAdapter = {
       Origin: WEB_ORIGIN,
       'User-Agent': WEB_UA,
     };
-    if (download.guestToken) {
+    // The platform hands out the token of the guest in the `Set-Cookie` of
+    // the answer, and the token is bound to the very answer it came with.
+    // The token has to travel with a request to the CDN, which is a
+    // different host, so it cannot stay in the jar of the host that
+    // answered.
+    const guestToken = download.guestToken
+      || context.session.cookieHeader(download.url).match(/__pugs=([^;]+)/)?.[1]
+      || '';
+    if (guestToken) {
       // The CDN refuses the download without the token of the guest, so the
       // token goes into the jar of the host and into the headers of the
       // link: the jar of the session does not travel with the link.
-      context.session.setCookie(download.url, GUEST_COOKIE, download.guestToken);
-      headers.Cookie = `${GUEST_COOKIE}=${download.guestToken}`;
+      context.session.setCookie(download.url, GUEST_COOKIE, guestToken);
+      headers.Cookie = `${GUEST_COOKIE}=${guestToken}`;
     }
 
     const probe = await context.session.probe(download.url, headers);

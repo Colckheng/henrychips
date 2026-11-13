@@ -76,6 +76,23 @@ function withoutRange(headers?: Record<string, string>): Record<string, string> 
 }
 
 /**
+ * Reads the value of one cookie out of the `Set-Cookie` lines of a response.
+ *
+ * A platform hands out the token of a guest in the headers of an answer, and
+ * the token has to travel with a request to a *different* host, so it cannot
+ * stay in the jar of the host that answered.
+ */
+export function cookieValue(setCookie: string[] | undefined, name: string): string {
+  for (const line of setCookie ?? []) {
+    const pair = line.split(';')[0]?.trim();
+    if (!pair?.startsWith(`${name}=`)) continue;
+    const value = pair.slice(name.length + 1).trim();
+    if (value) return value;
+  }
+  return '';
+}
+
+/**
  * The session state of one netdisk platform: a cookie jar and an account token
  * per host and a request pace per host. All of it is kept here so the platform
  * adapters only have to speak the platform protocol.
@@ -197,16 +214,51 @@ export class NetdiskSession {
     }
   }
 
-  async get(url: string, headers?: Record<string, string>): Promise<{ finalUrl: string; data: unknown; status: number }> {
-    return this.send(url, headers, (merged) => this.options.http.getJson(url, this.options.signal, { headers: merged }));
+  /**
+   * Writes the cookies of a response into the jar of its host.
+   *
+   * A platform hands out the token of a guest in the `Set-Cookie` of the
+   * answer, so the cookies of every response have to reach the jar. A cookie
+   * of a redirect hop belongs to the host of that hop, so only the cookies
+   * of the host the request was aimed at are written.
+   */
+  private storeCookies(url: string, setCookie: string[] | undefined): void {
+    const host = hostOf(url);
+    if (!host) return;
+    for (const line of setCookie ?? []) {
+      const pair = line.split(';')[0]?.trim();
+      if (!pair) continue;
+      const separator = pair.indexOf('=');
+      if (separator <= 0) continue;
+      const name = pair.slice(0, separator).trim();
+      const value = pair.slice(separator + 1).trim();
+      if (!name || !value) continue;
+      this.setCookie(url, name, value);
+    }
+  }
+
+  async get(url: string, headers?: Record<string, string>): Promise<{ finalUrl: string; data: unknown; status: number; setCookie: string[] }> {
+    return this.send(url, headers, async (merged) => {
+      const response = await this.options.http.getJson(url, this.options.signal, { headers: merged });
+      this.storeCookies(url, response.setCookie);
+      return { finalUrl: response.finalUrl, data: response.data, status: response.status, setCookie: response.setCookie ?? [] };
+    });
   }
 
   async postForm(url: string, fields: Record<string, string>, headers?: Record<string, string>): Promise<{ finalUrl: string; data: unknown; status: number }> {
-    return this.send(url, headers, (merged) => this.options.http.postForm(url, fields, this.options.signal, { headers: merged }));
+    return this.send(url, headers, async (merged) => {
+      const response = await this.options.http.postForm(url, fields, this.options.signal, { headers: merged });
+      this.storeCookies(url, response.setCookie);
+      return { finalUrl: response.finalUrl, data: response.data, status: response.status };
+    });
   }
 
-  async postJson(url: string, body: unknown, headers?: Record<string, string>): Promise<{ finalUrl: string; data: unknown; status: number }> {
-    return this.send(url, headers, (merged) => this.options.http.postJson(url, body, this.options.signal, { headers: merged }));
+  async postJson(url: string, body: unknown, headers?: Record<string, string>): Promise<{ finalUrl: string; data: unknown; status: number; setCookie: string[] }> {
+    return this.send(url, headers, async (merged) => {
+      const response = await this.options.http.postJson(url, body, this.options.signal, { headers: merged });
+      this.storeCookies(url, response.setCookie);
+      return { finalUrl: response.finalUrl, data: response.data, status: response.status, setCookie: response.setCookie ?? [] };
+    });
   }
 
   async getHtml(url: string, headers?: Record<string, string>): Promise<{ finalUrl: string; html: string; status: number }> {

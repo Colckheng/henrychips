@@ -83,12 +83,12 @@ export interface PublicHttpBody extends AsyncIterable<Uint8Array> {
 }
 export interface PublicHttp {
   getHtml(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; html: string; status: number }>;
-  getJson(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; data: unknown; status: number }>;
+  getJson(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; data: unknown; status: number; setCookie?: string[] }>;
   getBinary(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; bytes: Uint8Array; contentType: string; status: number }>;
   getRaw(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<PublicHttpResponse>;
   getHead(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<PublicHttpHead>;
-  postForm(url: string, fields: Record<string, string>, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; data: unknown; status: number }>;
-  postJson(url: string, body: unknown, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; data: unknown; status: number }>;
+  postForm(url: string, fields: Record<string, string>, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; data: unknown; status: number; setCookie?: string[] }>;
+  postJson(url: string, body: unknown, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; data: unknown; status: number; setCookie?: string[] }>;
   getStream(url: string, signal: AbortSignal, options?: PublicHttpRequest): Promise<{ finalUrl: string; status: number; contentType: string; contentLength: number | null; body: PublicHttpBody; headers: Record<string, string> }>;
 }
 export interface FileHandle {

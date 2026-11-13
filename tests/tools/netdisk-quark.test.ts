@@ -51,6 +51,8 @@ interface Route {
   data?: unknown;
   headers?: Record<string, string>;
   contentType?: string;
+  /** The cookies the platform sets on the answer. */
+  setCookie?: string[];
 }
 
 interface Recorded {
@@ -74,7 +76,7 @@ function fakeHttp(routes: Record<string, Route>): { http: PublicHttp; recorded: 
     getJson: async (url, _signal, options) => {
       recorded.push({ method: 'GET', url, headers: options?.headers });
       const route = pick(url);
-      return { finalUrl: url, data: route.data, status: route.status ?? 200 };
+      return { finalUrl: url, data: route.data, status: route.status ?? 200, setCookie: route.setCookie };
     },
     getBinary: async () => { throw new Error('unexpected request'); },
     getRaw: async (url, _signal, options) => {
@@ -94,7 +96,7 @@ function fakeHttp(routes: Record<string, Route>): { http: PublicHttp; recorded: 
     postJson: async (url, body, _signal, options) => {
       recorded.push({ method: 'POST', url, body, headers: options?.headers });
       const route = pick(url);
-      return { finalUrl: url, data: route.data, status: route.status ?? 200 };
+      return { finalUrl: url, data: route.data, status: route.status ?? 200, setCookie: route.setCookie };
     },
     getStream: async () => { throw new Error('unexpected request'); },
   };
@@ -230,12 +232,12 @@ test('takes the guest token into the jar of the host and into the link', async (
   assert.equal(link.name, 'demo.bin');
   // The CDN refuses the download without the guest token, and the jar of the
   // session does not travel with the link, so the token is in the headers.
-  assert.equal(link.headers.Cookie, `guest_pugs=${GUEST_TOKEN}`);
+  assert.equal(link.headers.Cookie, `__pugs=${GUEST_TOKEN}`);
   assert.equal(link.headers.Referer, 'https://pan.quark.cn/');
   assert.equal(link.headers.Origin, 'https://pan.quark.cn');
   // The probe of the link carries the token as well.
   const probe = recorded.find(call => call.url === CDN_URL);
-  assert.equal(probe?.headers?.Cookie, `guest_pugs=${GUEST_TOKEN}`);
+  assert.equal(probe?.headers?.Cookie, `__pugs=${GUEST_TOKEN}`);
 
   // The download request asks for the file by its own id and its own token.
   const download = recorded.find(call => call.url.includes('/file/download'));
@@ -254,8 +256,27 @@ test('takes the guest token into the jar of the host and into the link', async (
   assert.match(link.note ?? '', /游客/);
 });
 
-test('takes the range conclusion from the probe instead of assuming it', async () => {
+test('takes the guest token out of the cookies of the answer', async () => {
+  // The platform hands out the token of the guest in the `Set-Cookie` of the
+  // answer, not in the body of it. The body of the answer does not carry it
+  // at all, so a token read from the body would always be empty.
   const { http } = fakeHttp({
+    '/1/clouddrive/share/sharepage/token': { data: tokenAnswer },
+    '/1/clouddrive/file/download': {
+      data: { status: 200, code: 0, data: [{ download_url: CDN_URL, file_name: 'demo.bin', size: 1048576 }] },
+      setCookie: [`__pugs=${GUEST_TOKEN}; Path=/`],
+    },
+    '/file/demo.bin': {
+      status: 206,
+      headers: { 'accept-ranges': 'bytes', 'content-range': 'bytes 0-0/1048576' },
+    },
+  });
+  const link = await quarkAdapter.link(contextOf(http), file);
+  // The CDN refuses the download without the token of the guest.
+  assert.equal(link.headers.Cookie, `__pugs=${GUEST_TOKEN}`);
+});
+
+test('takes the range conclusion from the probe instead of assuming it', async () => {  const { http } = fakeHttp({
     '/1/clouddrive/share/sharepage/token': { data: tokenAnswer },
     '/1/clouddrive/file/download': { data: downloadAnswer },
     // A plain answer without a range header must not claim a resuming.
