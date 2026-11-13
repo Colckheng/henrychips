@@ -14,6 +14,7 @@ interface GuangYaAnswer {
   msg?: string;
   message?: string;
   data?: unknown;
+  [key: string]: unknown;
 }
 
 /**
@@ -22,8 +23,7 @@ interface GuangYaAnswer {
  */
 export type GuangYaAdapter = NetdiskAdapter & {
   /** Decides whether another page of a folder share exists. */
-  hasMore(answer: Record<string, unknown>, offset: number, pageSize: number): boolean;
-  /** Reads the entries of a file list answer. */
+  hasMore(answer: Record<string, unknown>, offset: number, pageSize: number): boolean;  /** Reads the entries of a file list answer. */
   parseEntries(data: unknown): NetdiskFile[];
   /** Reads the title of a share. */
   parseTitle(data: unknown): string;
@@ -41,7 +41,7 @@ function businessCode(answer: GuangYaAnswer): number {
  * The headers the platform expects. The `Referer` of the site is what a
  * download address is checked against, so it has to be part of them.
  */
-function headersOf(context: AdapterContext): Record<string, string> {
+function headersOf(): Record<string, string> {
   return {
     'Content-Type': 'application/json',
     Accept: 'application/json, text/plain, */*',
@@ -56,7 +56,6 @@ function headersOf(context: AdapterContext): Record<string, string> {
 function entriesOf(data: unknown): NetdiskFile[] {
   const root = data && typeof data === 'object' ? data as Record<string, unknown> : {};
   const raw = Array.isArray(root.text) ? root.text : Array.isArray(root.list) ? root.list : [];
-  const parent = typeof root.parentId === 'string' ? root.parentId : '';
   const files: NetdiskFile[] = [];
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue;
@@ -122,7 +121,7 @@ export const guangyaAdapter: GuangYaAdapter = {
   },
 
   async request(context: AdapterContext, path: string, body: Record<string, unknown>): Promise<GuangYaAnswer> {
-    const response = await context.session.postJson(`${API_BASE}${path}`, { client_id: CLIENT_ID, ...body }, headersOf(context));
+    const response = await context.session.postJson(`${API_BASE}${path}`, { client_id: CLIENT_ID, ...body }, headersOf());
     const answer = (response.data ?? {}) as GuangYaAnswer;
     const code = businessCode(answer);
     if (code !== 0 && code !== 200) {
@@ -182,7 +181,7 @@ export const guangyaAdapter: GuangYaAdapter = {
     const data = (answer.data ?? {}) as Record<string, unknown>;
     const url = typeof data.url === 'string' ? data.url : typeof data.downloadUrl === 'string' ? data.downloadUrl : '';
     if (!url) throw new ToolError('TOOL_FAILED', '光鸭云盘没有返回下载地址。');
-    const headers = { ...headersOf(context), Referer: `${WEB_SITE}/` };
+    const headers = { ...headersOf(), Referer: `${WEB_SITE}/` };
     const probe = await context.session.probe(url, headers);
     if (probe.status !== 200 && probe.status !== 206) {
       throw new ToolError('TOOL_FAILED', `光鸭云盘下载地址探测失败（HTTP ${probe.status}）。`);
