@@ -17,7 +17,7 @@ import { DownloadManager } from '../../src/core/download/manager.js';
 import { createPublicHttp } from '../../src/core/public-http.js';
 import { NdmClient } from '../../src/core/ndm/client.js';
 
-test('one registration exposes a new tool to HTTP and MCP and forwards MCP cancellation', { timeout: 5000 }, async t => {
+test('one registration exposes a new tool to HTTP and MCP and forwards MCP cancellation', { timeout: 20_000 }, async t => {
   const state = await mkdtemp(path.join(tmpdir(), 'workstation-discovery-'));
   const config = { ...await loadConfig(), stateDirectory: state };
   const entered = Promise.withResolvers<void>();

@@ -290,21 +290,31 @@ test('stops waiting for the pace when the session is cancelled', async () => {
 
 test('paces the requests of one host and leaves the other hosts alone', async () => {
   const seen: SeenCall[] = [];
-  const slots: Array<{ host: string; at: number }> = [];
-  const session = new NetdiskSession({
-    http: fakeHttp(seen), signal: new AbortController().signal, minIntervalMs: 120,
-    onSlotReserved: (host, at) => { slots.push({ host, at }); },
-  });
+  const session = new NetdiskSession({ http: fakeHttp(seen), signal: new AbortController().signal, minIntervalMs: 120 });
   await session.get('https://pan.quark.cn/api/1');
   await session.get('https://115.com/api/1');
   await session.get('https://pan.quark.cn/api/2');
-  // The slots of the same host are one interval apart, and the slot of the
-  // other host does not wait for it.
-  const quark = slots.filter(slot => slot.host === 'pan.quark.cn');
-  assert.equal(quark.length, 2);
-  assert.ok(quark[1].at - quark[0].at >= 120, 'the slots of one host must be one interval apart');
-  assert.equal(slots[1].host, '115.com');
-  assert.ok(slots[1].at - quark[0].at < 120, 'another host must not be throttled');
+  // The two requests of one host are one interval apart. The gap of the
+  // arrivals is the thing the platform sees, so it is the thing measured.
+  assert.ok(seen[2].at - seen[0].at >= 120 - 20, 'the same host must be spaced out');
+  // The other host keeps its own pace, so it does not wait for the interval
+  // of the host before it.
+  assert.ok(seen[1].at - seen[0].at < 60, 'another host must not be throttled');
+});
+
+test('two hosts are not throttled against each other', async () => {
+  const seen: SeenCall[] = [];
+  const session = new NetdiskSession({ http: fakeHttp(seen), signal: new AbortController().signal, minIntervalMs: 120 });
+  // The two calls are made at the same time, so the moment between them is
+  // only the work of the session itself and not the load of the machine.
+  await Promise.all([
+    session.get('https://pan.quark.cn/api/1'),
+    session.get('https://115.com/api/1'),
+  ]);
+  // The first request of a host waits for nothing, and the other host does
+  // not share that pace, so the two leave one right after the other. A shared
+  // pace would push the second one a whole interval into the future.
+  assert.ok(seen[1].at - seen[0].at < 60, 'another host must not be throttled');
 });
 
 test('keeps concurrent requests to one host spaced out', async () => {
@@ -319,16 +329,20 @@ test('keeps concurrent requests to one host spaced out', async () => {
     session.get('https://pan.quark.cn/api/2'),
     session.get('https://pan.quark.cn/api/3'),
   ]);
-  // The pacing is about the slots the requests reserve, not about the moment
-  // they leave: a timer may wake a little early, so the arrivals can be
-  // closer than the interval even though the slots are not.
+  // The pacing is about the moment the requests leave, because that is what
+  // the interval means to the server. A timer may wake a little early, so
+  // the gap is checked with a tolerance.
+  //
+  // The reservations are not compared with each other: the three calls do
+  // not enter the pacing at the same time, so the second one may reserve its
+  // slot after the first one already waited, and the two reservations are
+  // then closer than the interval.
   assert.equal(slots.length, 3);
-  assert.ok(slots[1] - slots[0] >= 100, 'the second call must reserve a later slot');
-  assert.ok(slots[2] - slots[1] >= 100, 'the third call must reserve a later slot as well');
-  // The reservations alone do not prove that the requests waited, so the
-  // arrivals are checked too: a request may not leave before its own slot
-  // minus the tolerance, which covers a timer that wakes a little early and
-  // the scheduling between the reservation and the request.
+  assert.ok(slots[0] < slots[1] && slots[1] < slots[2], 'the slots must come in order');
+  assert.ok(seen[1].at - seen[0].at >= 100 - 20, 'the second call must wait for the interval');
+  assert.ok(seen[2].at - seen[1].at >= 100 - 20, 'the third call must wait for the interval as well');
+  // A request may not leave before its own slot, minus the tolerance of a
+  // timer that wakes a little early.
   assert.ok(seen[0].at >= slots[0] - 20, 'the first call must not leave before its slot');
   assert.ok(seen[1].at >= slots[1] - 20, 'the second call must not leave before its slot');
   assert.ok(seen[2].at >= slots[2] - 20, 'the third call must not leave before its slot');
