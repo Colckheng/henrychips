@@ -47,3 +47,15 @@ test('builds the referer the platform checks a share against', () => {
 test('the client user agent carries the version the platform asks for', () => {
   assert.equal(pan115Adapter.clientUserAgent('36.0.1'), 'Mozilla/5.0 115Browser/36.0.1');
 });
+
+test('turns the error code of the platform into a message', () => {
+  // The codes say what went wrong, so the user does not have to read the
+  // message of the platform to know whether a passcode is missing or wrong.
+  assert.match(pan115Adapter.describeError({ state: false, code: 4100012 }), /提取码/);
+  assert.match(pan115Adapter.describeError({ state: false, code: 4100008 }), /不正确/);
+  assert.match(pan115Adapter.describeError({ state: false, code: 4100026 }), /不存在/);
+  assert.match(pan115Adapter.describeError({ state: false, code: 50029 }), /版本/);
+  // A message of the platform is used when the code says nothing.
+  assert.equal(pan115Adapter.describeError({ state: false, error: '平台自己的话' }), '平台自己的话');
+  assert.match(pan115Adapter.describeError({ state: false, code: 12345 }), /12345/);
+});

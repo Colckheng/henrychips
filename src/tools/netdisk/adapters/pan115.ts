@@ -15,9 +15,26 @@ interface Pan115Answer {
   state?: boolean;
   code?: number;
   message?: string;
+  error?: string;
+  msg?: string;
   data?: unknown;
   [key: string]: unknown;
 }
+
+/**
+ * The error codes of the platform, which say what went wrong without the
+ * message of the platform having to be read.
+ */
+const ERRNO_MESSAGES = new Map<number, string>([
+  [990001, '115 网盘的登录态已过期，请重新配置凭证。'],
+  [4100012, '这个分享需要提取码，请提供后重试。'],
+  [4100008, '提取码不正确。'],
+  [4100026, '分享不存在或已经取消。'],
+  [4100016, '这个分享是空的。'],
+  [990009, '115 网盘正忙，请稍后重试。'],
+  [50028, '浏览器端拿不到大文件的直链，请改用客户端方式。'],
+  [50029, '客户端版本过低，平台拒绝发放直链。'],
+]);
 
 /**
  * The adapter of the 115 share link. The object holds the pure helpers next
@@ -30,6 +47,8 @@ export type Pan115Adapter = NetdiskAdapter & {
   parseEntries(data: unknown): NetdiskFile[];
   /** Reads the id of the user who made the share. */
   parseSharerId(data: unknown): string;
+  /** Turns the error code of the platform into a message. */
+  describeError(answer: Pan115Answer): string;
   /** The referer the platform checks a share request against. */
   shareReferer(shareCode: string, receiveCode: string | null): string;
   /** The client user agent, which is the only one that is given a link. */
@@ -120,6 +139,16 @@ export const pan115Adapter: Pan115Adapter = {
     return typeof id === 'string' ? id : typeof id === 'number' ? String(id) : '';
   },
 
+  describeError(answer) {
+    const code = typeof answer.code === 'number' ? answer.code : Number.NaN;
+    const known = Number.isFinite(code) ? ERRNO_MESSAGES.get(code) : undefined;
+    if (known) return known;
+    const raw = typeof answer.error === 'string' && answer.error
+      ? answer.error
+      : typeof answer.msg === 'string' && answer.msg ? answer.msg : '';
+    return raw || (Number.isFinite(code) ? `115 网盘返回了错误码 ${code}。` : '115 网盘拒绝了这次请求。');
+  },
+
   shareReferer(shareCode, receiveCode) {
     return receiveCode
       ? `${SHARE_HOST}/s/${shareCode}?password=${receiveCode}&`
@@ -149,7 +178,7 @@ export const pan115Adapter: Pan115Adapter = {
       const response = await context.session.get(`${API_BASE}/share/snap?${query.toString()}`, shareHeaders(referer));
       const answer = (response.data ?? {}) as Pan115Answer;
       if (answer.state === false) {
-        throw new ToolError('TOOL_FAILED', typeof answer.message === 'string' ? answer.message : '115 网盘拒绝了这次分享请求。');
+        throw new ToolError('TOOL_FAILED', this.describeError(answer));
       }
       const data = answer.data && typeof answer.data === 'object' ? answer.data as Record<string, unknown> : {};
       sharerId = this.parseSharerId(data) || sharerId;
@@ -198,7 +227,7 @@ export const pan115Adapter: Pan115Adapter = {
     );
     const answer = (response.data ?? {}) as Pan115Answer;
     if (answer.state === false) {
-      throw new ToolError('TOOL_FAILED', typeof answer.message === 'string' ? answer.message : '115 网盘拒绝了这次取链请求。');
+      throw new ToolError('TOOL_FAILED', this.describeError(answer));
     }
     const url = this.pickDownloadUrl(answer.data);
     if (!url) throw new ToolError('TOOL_FAILED', '115 网盘没有返回下载地址。');
