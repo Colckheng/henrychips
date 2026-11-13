@@ -3,7 +3,7 @@ import { useSyncExternalStore } from 'react';
 export type Route =
   | { page: 'tools'; category: string; query: string }
   | { page: 'tool'; name: string; example: boolean }
-  | { page: 'runs' | 'integrations' | 'servers' | 'missing' };
+  | { page: 'runs' | 'integrations' | 'servers' | 'downloads' | 'missing' };
 
 function subscribe(callback: () => void) {
   window.addEventListener('hashchange', callback);
@@ -20,6 +20,7 @@ export function useRoute(): Route {
   if (path === '/runs') return { page: 'runs' };
   if (path === '/integrations') return { page: 'integrations' };
   if (path === '/servers') return { page: 'servers' };
+  if (path === '/downloads') return { page: 'downloads' };
   const match = path.match(/^\/tools\/([^/]+)$/);
   if (match) {
     try { return { page: 'tool', name: decodeURIComponent(match[1]), example: params.has('example') }; }

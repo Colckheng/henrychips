@@ -8,6 +8,7 @@ import { CopyButton } from './CopyButton.js';
 import { CsvResult } from './CsvResult.js';
 import { FilesResult } from './FilesResult.js';
 import { EmptyState, ErrorNotice, Warnings } from './Feedback.js';
+import { NetdiskResult } from './NetdiskResult.js';
 import { DataTable, GenericResult, Metrics, valueText } from './ResultData.js';
 
 function MediaStreams({ data }: { data: Record<string, unknown> }) {
@@ -29,6 +30,7 @@ function ResultView({ tool, data }: { tool: string; data: Record<string, unknown
   if (tool === 'files_plan') return <FilesResult data={data} />;
   if (tool === 'text_stats') return <><Metrics data={data} keys={['characters', 'charactersWithoutWhitespace', 'lines', 'hanCharacters', 'latinWords']} /><p className="inline-note">字符按 Unicode 码点统计；拉丁词数不代表通用分词结果。</p></>;
   if (tool === 'bilibili_video') return <MediaStreams data={data} />;
+  if (tool === 'netdisk_resolve') return <NetdiskResult data={data} />;
   return <GenericResult data={data} />;
 }
 

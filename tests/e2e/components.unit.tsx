@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { parseHTML } from 'linkedom';
 import { FormField } from '../../src/web/components/FormField.js';
 import { CsvResult } from '../../src/web/components/CsvResult.js';
+import { NetdiskResult, curlCommand } from '../../src/web/components/NetdiskResult.js';
 import { ResultPanel } from '../../src/web/components/ResultPanel.js';
 import { GenericResult } from '../../src/web/components/ResultData.js';
 
@@ -73,4 +74,70 @@ test('media streams are rendered as a table instead of a raw JSON blob', () => {
   const rows = [...document.querySelectorAll('table[aria-label="媒体流列表"] tbody td')].map(cell => cell.textContent);
   assert.deepEqual(rows, ['视频', 'MP4 清晰度 64', 'avc1', '5,492,083', 'https://cdn/video.mp4']);
   assert.equal(document.body.textContent?.includes('"kind":"video"'), false);
+});
+
+test('the netdisk result lists the files and the links with their actions', () => {
+  const html = renderToStaticMarkup(createElement(ResultPanel, {
+    tool: 'netdisk_resolve', status: 'done', retry: () => undefined,
+    result: {
+      ok: true,
+      meta: { ...meta, tool: 'netdisk_resolve' },
+      data: {
+        platform: 'quark', platformLabel: '夸克网盘', shareId: 'abc123', title: '示例分享',
+        fileCount: 2, totalBytes: 1024,
+        files: [
+          { id: '1', path: 'a.bin', name: 'a.bin', sizeBytes: 1024, isDirectory: false },
+          { id: '2', path: 'folder', name: 'folder', sizeBytes: null, isDirectory: true },
+        ],
+        links: [{ path: 'a.bin', name: 'a.bin', sizeBytes: 1024, url: 'https://cdn/a.bin', headers: { Referer: 'https://pan.quark.cn/' }, rangeSupported: true }],
+        linkFailures: [{ path: 'b.bin', reason: '取链超时' }],
+        credentialUsed: false, warnings: ['直链通常在十几分钟内过期，请尽快下载。'],
+      },
+    },
+  }));
+  const { document } = parseHTML(html);
+  const files = [...document.querySelectorAll('table[aria-label="分享文件列表"] tbody tr')].map(row => row.textContent);
+  assert.equal(files.length, 2);
+  assert.match(files[0] ?? '', /a\.bin/);
+  const links = [...document.querySelectorAll('table[aria-label="下载直链列表"] tbody td')].map(cell => cell.textContent);
+  assert.equal(links[0], 'a.bin');
+  assert.equal(links[2], 'https://cdn/a.bin');
+  assert.equal(links[3], '支持续传');
+  const failures = [...document.querySelectorAll('table[aria-label="取链失败列表"] tbody td')].map(cell => cell.textContent);
+  assert.deepEqual(failures, ['b.bin', '取链超时']);
+  // The warning of the run is shown by the panel, so it is not repeated here.
+  const notices = [...document.querySelectorAll('.notice-warning li')].map(item => item.textContent);
+  assert.deepEqual(notices, ['服务端警告原文', '直链通常在十几分钟内过期，请尽快下载。']);
+});
+
+test('the copy curl command carries the headers the download needs', () => {
+  const command = curlCommand({
+    path: 'a.bin', name: 'a.bin', sizeBytes: 10,
+    url: 'https://cdn/a.bin',
+    headers: { Referer: 'https://pan.quark.cn/', Cookie: 'k=v', 'User-Agent': 'Mozilla/5.0' },
+    rangeSupported: true,
+  });
+  assert.equal(command, 'curl -L -H "Referer: https://pan.quark.cn/" -H "Cookie: k=v" -H "User-Agent: Mozilla/5.0" -o "a.bin" "https://cdn/a.bin"');
+});
+
+test('a value with a double quote in the curl command is escaped', () => {
+  const command = curlCommand({
+    path: 'a.bin', name: 'say "hi".bin', sizeBytes: 10,
+    url: 'https://cdn/a.bin?x="1"',
+    headers: { Cookie: 'k="v"' },
+    rangeSupported: true,
+  });
+  assert.equal(command, 'curl -L -H "Cookie: k=\\"v\\"" -o "say \\"hi\\".bin" "https://cdn/a.bin?x=\\"1\\""');
+});
+
+test('the netdisk result shows no credential of the account', () => {
+  const html = renderToStaticMarkup(createElement(NetdiskResult, {
+    data: {
+      platform: 'quark', platformLabel: '夸克网盘', shareId: 'abc123', title: '示例分享',
+      fileCount: 0, totalBytes: 0, files: [], links: [], linkFailures: [],
+      credentialUsed: true, warnings: [],
+    },
+  }));
+  assert.equal(html.includes('credentialUsed'), false);
+  assert.equal(html.includes('使用了登录态'), false);
 });

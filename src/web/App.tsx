@@ -5,6 +5,7 @@ import { useRoute } from './router.js';
 import { Shell } from './components/Shell.js';
 import { EmptyState } from './components/Feedback.js';
 import { Catalog } from './pages/Catalog.js';
+import { Downloads } from './pages/Downloads.js';
 import { History } from './pages/History.js';
 import { Integrations } from './pages/Integrations.js';
 import { Servers } from './pages/Servers.js';
@@ -30,6 +31,7 @@ export default function App() {
   else if (route.page === 'runs') content = <History tools={catalog.data} />;
   else if (route.page === 'integrations') content = <Integrations />;
   else if (route.page === 'servers') content = <Servers />;
+  else if (route.page === 'downloads') content = <Downloads />;
   else content = <EmptyState title="没有找到这个页面" action={<a className="button button-primary" href="#/tools">返回工具箱</a>}>这个地址可能已经变化，回到工具箱继续吧。</EmptyState>;
   return <Shell route={route} tools={catalog.data}><PageBoundary key={routeKey}>{content}</PageBoundary></Shell>;
 }

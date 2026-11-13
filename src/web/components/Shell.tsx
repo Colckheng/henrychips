@@ -1,8 +1,8 @@
-import { ArrowUpRight, Boxes, ChevronRight, Circle, History, LayoutGrid, LoaderCircle, PlugZap, Server, SquareTerminal } from 'lucide-react';
+import { ArrowUpRight, Boxes, ChevronRight, Circle, Download, History, LayoutGrid, LoaderCircle, PlugZap, Server, SquareTerminal } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ToolDescription } from '../../contracts/tool.js';
-import { useApi } from '../api.js';
+import { subscribeDownloads, useApi } from '../api.js';
 import { categoryEntries } from '../presentation.js';
 import { catalogLink, type Route } from '../router.js';
 import { useRunEntries } from '../run-store.js';
@@ -13,6 +13,12 @@ const navigation = [
   { page: 'integrations', label: 'AI 接入', icon: PlugZap },
   { page: 'servers', label: '服务器', icon: Server },
 ] as const;
+
+/** The pages that live outside the sidebar and are reached from the top bar. */
+const extraTitles: Partial<Record<Route['page'], string>> = { downloads: '下载任务' };
+
+/** The tasks that are still moving; a finished download is of no interest in the top bar. */
+const activeTaskStatuses = new Set(['queued', 'preparing', 'downloading', 'verifying']);
 
 function HealthStatus() {
   const health = useApi<{ status: string; version: string }>('/health');
@@ -38,9 +44,23 @@ function RunningTasks() {
   </div>;
 }
 
+function DownloadTasks() {
+  const [count, setCount] = useState(0);
+  useEffect(() => subscribeDownloads(tasks => {
+    setCount(tasks.filter(task => activeTaskStatuses.has(task.status)).length);
+  }), []);
+  if (!count) return null;
+  return <div className="running-tasks" role="status" aria-live="polite">
+    <a className="running-task" href="#/downloads">
+      <Download size={13} aria-hidden="true" />
+      <span>{count} 个下载进行中</span>
+    </a>
+  </div>;
+}
+
 export function Shell({ route, tools, children }: { route: Route; tools?: ToolDescription[]; children: ReactNode }) {
   const section = route.page === 'tool' ? 'tools' : route.page;
-  const title = navigation.find(item => item.page === section)?.label ?? '页面未找到';
+  const title = navigation.find(item => item.page === section)?.label ?? extraTitles[route.page] ?? '页面未找到';
   const main = useRef<HTMLElement>(null);
   const previous = useRef(route.page === 'tool' ? `tool:${route.name}` : route.page);
   const current = route.page === 'tool' ? `tool:${route.name}` : route.page;
@@ -74,7 +94,7 @@ export function Shell({ route, tools, children }: { route: Route; tools?: ToolDe
     </aside>
     <div className="workspace"><header className="topbar"><div className="breadcrumb"><span>工作空间</span><ChevronRight size={13} aria-hidden="true" /><strong>{title}</strong>
       {route.page === 'tool' && <><ChevronRight size={13} aria-hidden="true" /><span className="breadcrumb-detail">工具详情</span></>}
-    </div><div className="topbar-actions"><RunningTasks /><HealthStatus /></div></header>
+    </div><div className="topbar-actions"><RunningTasks /><DownloadTasks /><HealthStatus /></div></header>
       <main id="main-content" className="main-content" ref={main} tabIndex={-1}>{children}</main>
       <footer className="workspace-footer"><span>Henry 工作台 <span className="footer-divider">/</span> 为专注而留白</span><span>本地工具 · 简单有序</span></footer>
     </div>

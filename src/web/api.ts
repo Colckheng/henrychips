@@ -119,6 +119,93 @@ export async function fetchRunResult(runId: string, ownerToken: string): Promise
   } catch { return undefined; }
 }
 
+export interface DownloadTaskView {
+  id: string;
+  platform: string;
+  title: string;
+  fileName: string;
+  filePath: string;
+  sizeBytes: number | null;
+  status: string;
+  backend: string;
+  bytesWritten: number;
+  totalBytes: number | null;
+  speedBytesPerSecond: number | null;
+  rangeSupported: boolean | null;
+  createdAt: string;
+  updatedAt: string;
+  error?: { code: string; message: string };
+}
+
+export async function fetchDownloads(): Promise<DownloadTaskView[]> {
+  const response = await fetch('/api/downloads', { headers: { Accept: 'application/json' } });
+  if (!response.ok) throw new ApiError('无法读取下载任务列表。', `HTTP_${response.status}`);
+  const data = await response.json() as { tasks?: DownloadTaskView[] };
+  return data.tasks ?? [];
+}
+
+async function downloadCommand(path: string, init: RequestInit, key: string): Promise<boolean> {
+  const response = await fetch(path, init);
+  if (!response.ok) throw new ApiError('下载任务的操作没有生效，请稍后重试。', `HTTP_${response.status}`);
+  const data = await response.json() as Record<string, unknown>;
+  return data[key] === true;
+}
+
+export async function pauseDownload(id: string): Promise<boolean> {
+  return downloadCommand(`/api/downloads/${encodeURIComponent(id)}/pause`, { method: 'POST' }, 'paused');
+}
+
+export async function resumeDownload(id: string): Promise<boolean> {
+  return downloadCommand(`/api/downloads/${encodeURIComponent(id)}/resume`, { method: 'POST' }, 'resumed');
+}
+
+export async function removeDownload(id: string): Promise<boolean> {
+  return downloadCommand(`/api/downloads/${encodeURIComponent(id)}`, { method: 'DELETE' }, 'removed');
+}
+
+/** Subscribes to the download tasks. Falls back to polling when events are unavailable. */
+export function subscribeDownloads(onTasks: (tasks: DownloadTaskView[]) => void): () => void {
+  let closed = false;
+  let source: EventSource | undefined;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const stop = () => {
+    closed = true;
+    source?.close();
+    source = undefined;
+    if (timer) { clearInterval(timer); timer = undefined; }
+  };
+  const poll = async () => {
+    try {
+      const tasks = await fetchDownloads();
+      if (closed) return;
+      onTasks(tasks);
+    } catch { /* the service may be restarting */ }
+  };
+  if (typeof EventSource === 'undefined') {
+    timer = setInterval(() => { if (!closed) void poll(); }, 2000);
+    void poll();
+    return stop;
+  }
+  source = new EventSource('/api/downloads/events');
+  source.onmessage = event => {
+    if (closed) return;
+    try {
+      const payload = JSON.parse(event.data) as { tasks?: DownloadTaskView[] };
+      onTasks(payload.tasks ?? []);
+    } catch { /* ignore malformed frames */ }
+  };
+  source.onerror = () => {
+    if (closed) return;
+    source?.close();
+    source = undefined;
+    if (timer) return;
+    // The stream is gone, so the list is polled instead.
+    void poll();
+    timer = setInterval(() => { if (!closed) void poll(); }, 2000);
+  };
+  return stop;
+}
+
 export async function openOutputFolder(): Promise<{ opened: boolean; message?: string }> {
   try {
     const response = await fetch('/api/output/open', { method: 'POST', headers: { Accept: 'application/json' } });

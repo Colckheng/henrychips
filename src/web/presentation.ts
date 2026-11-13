@@ -50,4 +50,7 @@ export const resultLabels: Record<string, string> = {
   compressedBytes: '压缩后体积（字节）', savedBytes: '节省体积（字节）', ratio: '压缩比',
   width: '宽度', height: '高度', format: '输出格式', savedFile: '输出文件', relativePath: '文件路径',
   bytes: '字节数', warnings: '提示',
+  platformLabel: '网盘平台', shareId: '分享码', fileCount: '文件数',
+  links: '下载直链', linkFailures: '取链失败', credentialUsed: '使用了登录态', filePath: '文件路径',
+  fileName: '文件名', isDirectory: '是文件夹', modifiedAt: '修改时间', rangeSupported: '支持续传',
 };
