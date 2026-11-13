@@ -163,6 +163,18 @@ test('parses a display size into bytes', () => {
   assert.equal(lanzouAdapter.parseDisplaySize('800'), 800);
 });
 
+test('reads the variables of a page out of its scripts only', () => {
+  // A parameter of an url in the markup around the scripts must not pass for
+  // a variable of the page.
+  const html = `<html><head><title>文件夹</title></head><body>
+    <a href="?t=WRONG&amp;fid=999">back</a>
+    <script>var filemoreajax = 1;</script>
+    <script>var lx = "1"; var fid = "abc"; var t = "t1"; var k = "k1";</script>
+    </body></html>`;
+  const parsed = lanzouAdapter.parseSharePage(html, SHARE_URL);
+  assert.deepEqual(parsed.folderParams, { lx: '1', fid: 'abc', t: 't1', k: 'k1' });
+});
+
 test('reads the endpoint and the tokens of the inner page', () => {
   const params = lanzouAdapter.parseInnerPage(innerPage);
   assert.equal(params?.endpoint, 'https://apifile.woozooo.com/ajaxfile.php?file=6513996');
@@ -398,11 +410,39 @@ test('answers the challenge of the node with the cookie it asks for', () => {
   assert.notEqual(acwScV2(arg1), acwScV2('1E6E7ED365DE6F543CA2A836541FFC085BAF04A5'));
 });
 
+/** The token of the challenge the download node hands out. */
+const CHALLENGE_TOKEN = '0874DAC8D7647554B5817FB63EDFFC3850A09917';
+
+/**
+ * The answer the node expects for its challenge. The table is a copy of the
+ * one of the platform, so the test judges the adapter by an oracle that does
+ * not come from the adapter itself.
+ */
+const CHALLENGE_POS = [15, 35, 29, 24, 33, 16, 1, 38, 10, 9, 19, 31, 40, 27, 22, 23, 25, 13, 6, 11, 39, 18, 20, 8, 14, 21, 32, 26, 2, 30, 7, 4, 17, 5, 3, 28, 34, 37, 12, 36];
+const CHALLENGE_MASK = '3000176000856006061501533003690027800375';
+
+function expectedChallengeCookie(token: string): string {
+  const shuffled = new Array<string>(CHALLENGE_POS.length);
+  for (let x = 0; x < token.length; x++) {
+    for (let z = 0; z < CHALLENGE_POS.length; z++) {
+      if (CHALLENGE_POS[z] === x + 1) shuffled[z] = token[x];
+    }
+  }
+  const joined = shuffled.join('');
+  let out = '';
+  for (let i = 0; i + 2 <= joined.length && i + 2 <= CHALLENGE_MASK.length; i += 2) {
+    const value = parseInt(joined.slice(i, i + 2), 16);
+    const mask = parseInt(CHALLENGE_MASK.slice(i, i + 2), 16);
+    out += (value ^ mask).toString(16).padStart(2, '0');
+  }
+  return out;
+}
+
 test('runs the request of the adapter through the real public client', async (t) => {
   // The fake transport of the other cases cannot show a mismatch between the
   // mime type of an answer and the type the client accepts, so the request of
   // the adapter runs through the production client here.
-  const challenge = "<html><script>var arg1='0874DAC8D7647554B5817FB63EDFFC3850A09917';</script></html>";
+  const challenge = `<html><script>var arg1='${CHALLENGE_TOKEN}';</script></html>`;
   const seen: string[] = [];
   const origin = await transport(t, (origin, request, response) => {
     seen.push(request.url ?? '');
@@ -427,6 +467,18 @@ test('runs the request of the adapter through the real public client', async (t)
       return;
     }
     if (request.url === '/file/real') {
+      // The node only serves the file to a request that answers its
+      // challenge, so the cookie of the answer decides what comes back.
+      const cookie = request.headers.cookie ?? '';
+      if (cookie.includes(`acw_sc__v2=${expectedChallengeCookie(CHALLENGE_TOKEN)}`)) {
+        response.writeHead(200, {
+          'content-type': 'application/octet-stream',
+          'accept-ranges': 'bytes',
+          'content-length': '4',
+        });
+        response.end('MZ\u0090\u0000');
+        return;
+      }
       // The node answers with a page that is compressed, and the client has to
       // decode it to be able to tell a page from a file.
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-encoding': 'gzip' });
@@ -443,6 +495,17 @@ test('runs the request of the adapter through the real public client', async (t)
   const share = await lanzouAdapter.list(context);
   assert.equal(share.files.length, 1);
   assert.equal(share.files[0].name, 'demo.txt');
-  // The landing page was read through the production client.
-  assert.deepEqual(seen, ['/abc']);
+  // The whole chain of the platform is asked: the landing page, the inner
+  // page, the download endpoint and the file itself.
+  const link = await lanzouAdapter.link(context, share.files[0]);
+  for (const path of ['/abc', '/fn?inner', '/ajaxfile.php?file=6513996', '/file/real']) {
+    assert.ok(seen.includes(path), `${path} must be asked`);
+  }
+  // The node is asked twice, because the first answer is its challenge.
+  assert.equal(seen.filter(path => path === '/file/real').length, 2);
+  // The link is the one the node serves the file from, and the node says
+  // that it supports resuming.
+  assert.equal(link.url, `${origin}/file/real`);
+  assert.equal(link.rangeSupported, true);
+  assert.equal(link.source.fileId, '6513996');
 });

@@ -172,6 +172,16 @@ function decoderOf(encoding: string): Transform | null {
 }
 
 /**
+ * Pipes the body into the decoder of its content encoding. An error of the
+ * body has to end the decoder as well: a decoder that waits for the rest of
+ * a body that never arrives would leave the read hanging forever.
+ */
+function decodedSource(body: Readable, decoder: Transform): Readable {
+  body.on('error', error => { decoder.destroy(error); });
+  return body.pipe(decoder);
+}
+
+/**
  * The ceiling of an error answer that a caller reads for its status. The
  * status is what such a caller wants, so the body must not be refused for
  * being larger than the limit of the caller; it is bounded all the same.
@@ -331,12 +341,12 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
             // the stream ends. Destroying it here would cut the download off.
             body.once('close', () => { void agent.destroy(); });
             handedOff = true;
-            const source = decoder ? body.pipe(decoder) : body;
+            const source = decoder ? decodedSource(body, decoder) : body;
             return { finalUrl: url.href, status: statusCode, contentType, contentLength, body: limitedBody(source, bodyLimit), headers: responseHeaders };
           }
           const chunks: Buffer[] = [];
           let total = 0;
-          const source = decoder ? body.pipe(decoder) : body;
+          const source = decoder ? decodedSource(body, decoder) : body;
           for await (const chunk of source) {
             checkAbort(signal);
             const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);

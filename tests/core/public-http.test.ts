@@ -534,6 +534,36 @@ test('keeps the cookies of a redirect chain readable when the body is too large'
   assert.deepEqual(head.setCookie, ['cdn_sid=abc; Path=/']);
 });
 
+test('fails a compressed read whose connection dies instead of waiting for the rest', async (t) => {
+  // A server that drops the connection in the middle of the body leaves the
+  // decoder waiting for bytes that never arrive, so the read has to end with
+  // an error.
+  await transport(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-encoding': 'gzip' });
+    res.write(Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00]));
+    res.flushHeaders();
+    res.socket?.destroy();
+  });
+  const http = createPublicHttp(2_097_152);
+  const started = Date.now();
+  await assert.rejects(http.getRaw('http://public.test/', signal(), { acceptCompressed: true }), { code: 'NETWORK_ERROR' });
+  // A read that waits for the rest of a body that never comes would hang.
+  assert.ok(Date.now() - started < 5_000, 'the read must end instead of hanging');
+});
+
+test('fails a compressed read that is cancelled instead of waiting for the rest', async (t) => {
+  const controller = new AbortController();
+  await transport(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-encoding': 'gzip' });
+    res.write(Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00]));
+    res.flushHeaders();
+  });
+  const http = createPublicHttp(2_097_152);
+  const pending = http.getRaw('http://public.test/', controller.signal, { acceptCompressed: true });
+  setTimeout(() => controller.abort(), 50);
+  await assert.rejects(pending, { code: 'CANCELLED' });
+});
+
 test('filters request headers against the allowlist', () => {
   const allowed = safeRequestHeaders({ Range: 'bytes=0-3', Authorization: 'Bearer token', 'X-Requested-With': 'XMLHttpRequest' });
   assert.deepEqual(allowed, { range: 'bytes=0-3', authorization: 'Bearer token', 'x-requested-with': 'XMLHttpRequest' });

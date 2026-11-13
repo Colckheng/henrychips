@@ -47,13 +47,31 @@ export type LanzouAdapter = NetdiskAdapter & {
 };
 
 /**
+ * The scripts of a page. A variable of the platform lives in a script, so
+ * only the scripts are read for it. Markup outside a script can carry a
+ * parameter of the same name, and that must not shadow the variable.
+ */
+function scriptsOf(html: string): string {
+  const blocks: string[] = [];
+  const pattern = /<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi;
+  let matched = pattern.exec(html);
+  while (matched) {
+    blocks.push(matched[1]);
+    matched = pattern.exec(html);
+  }
+  return blocks.join('\n');
+}
+
+/**
  * Reads a value of a script of the page. The word boundary keeps a name from
  * being found inside another one, so "t" does not pick the value of
  * "content" and "sign" does not pick the value of "wp_sign". A page states a
- * number without quotes, so both spellings are read.
+ * number without quotes, so both spellings are read. A name in front of a
+ * query parameter is not a variable either, so the parameter of an url does
+ * not pass for one.
  */
-function jsValue(html: string, name: string): string | null {
-  const matched = new RegExp(`(?:var\\s+)?\\b${name}\\s*=\\s*(?:["']([^"']*)["']|([A-Za-z0-9_.:/?=&+-]+))`).exec(html);
+function jsValue(source: string, name: string): string | null {
+  const matched = new RegExp(`(?:var\\s+)?(?<![\\w?&=])${name}\\s*=\\s*(?:["']([^"']*)["']|([A-Za-z0-9_.:/?=&+-]+))`).exec(source);
   if (!matched) return null;
   return matched[1] ?? matched[2] ?? null;
 }
@@ -149,6 +167,10 @@ export const lanzouAdapter: LanzouAdapter = {
     const url = safeUrl(shareUrl);
     if (!url) throw new ToolError('INVALID_INPUT', '请输入有效的蓝奏云分享链接。');
     const baseUrl = `${url.protocol}//${url.host}`;
+    // The variables of the page live in its scripts, so only the scripts are
+    // read for them. A parameter of an url in the markup around them must
+    // not pass for a variable.
+    const script = scriptsOf(html);
     const needsPwd = html.includes('请输入密码') || html.includes('id="pwbox"')
       || html.includes('input_password') || html.includes('密码不正确') || html.includes('function down_p(');
     // The page marks a folder share itself; the prefix of the link only tells
@@ -157,16 +179,18 @@ export const lanzouAdapter: LanzouAdapter = {
     // The landing page of a single file share states the id of the file in a
     // field of its own, as "var fid = 6513996;". The id of a folder share is
     // the id of the folder, so it is not an id of a file.
-    const statedId = jsValue(html, 'fid');
+    const statedId = jsValue(script, 'fid');
+    // The id in the address of an endpoint is a url, not a variable of the
+    // page, so it is looked for in the whole document.
     const endpointId = /(?:ajaxm|ajaxfile)\.php\?file=(\d+)/.exec(html)?.[1]
       ?? /name=["']file["']\s+value=["'](\d+)["']/.exec(html)?.[1] ?? null;
     const fileId = isFolder
       ? endpointId
       : (statedId && /^\d+$/.test(statedId) ? statedId : endpointId);
-    const lx = jsValue(html, 'lx');
+    const lx = jsValue(script, 'lx');
     const fid = statedId ?? shareIdOf(url);
-    const t = jsValue(html, 't');
-    const k = jsValue(html, 'k');
+    const t = jsValue(script, 't');
+    const k = jsValue(script, 'k');
     const title = /<title[^>]*>([^<]*)<\/title>/i.exec(html)?.[1]?.trim() ?? '';
     const sizeText = /(?:文件大小|大小)\s*[:：]\s*([\d.]+)\s*([KMGT]?)(?:i?B)?/i.exec(html);
     const shareId = shareIdOf(url);
@@ -200,13 +224,14 @@ export const lanzouAdapter: LanzouAdapter = {
    * be used with the request of that very page.
    */
   parseInnerPage(html: string): DownloadParams | null {
-    const endpoint = jsValue(html, 'domain1') ?? jsValue(html, 'domain2');
-    const sign = jsValue(html, 'wp_sign');
+    const script = scriptsOf(html);
+    const endpoint = jsValue(script, 'domain1') ?? jsValue(script, 'domain2');
+    const sign = jsValue(script, 'wp_sign');
     // The key of the request is not a variable of the page: the script of the
     // page sends the value of "ajaxdata" under both names.
-    const ajaxData = jsValue(html, 'ajaxdata');
+    const ajaxData = jsValue(script, 'ajaxdata');
     if (!endpoint || !sign || !ajaxData) return null;
-    return { endpoint, sign, ajaxData, kdns: jsValue(html, 'kdns') ?? '1' };
+    return { endpoint, sign, ajaxData, kdns: jsValue(script, 'kdns') ?? '1' };
   },
 
   async list(context: AdapterContext): Promise<NetdiskShare> {
