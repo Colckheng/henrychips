@@ -1,6 +1,6 @@
 # 个人工作站：架构设计与详细实施计划
 
-> 状态：2026-11-02 首版框架与六个示例工具已完成；第二轮影音与文档工具（B 站、抖音、去水印、格式转换、照片压缩）已实现并验证；2026-11-03 增加 XLSX 表格分析、Electron 桌面端外壳、服务器中继与工作台「服务器」页；2026-11-13 增加网盘分享解析与下载（`netdisk_share`）、九个平台适配器、下载任务页与 `credentials` CLI 子命令，注册工具数 14。第 19 节记录各轮证据，第 23 节记录桌面端与中继的实现细节。
+> 状态：2026-11-02 首版框架与六个示例工具已完成；第二轮影音与文档工具（B 站、抖音、去水印、格式转换、照片压缩）已实现并验证；2026-11-03 增加 XLSX 表格分析、Electron 桌面端外壳、服务器中继与工作台「服务器」页；2026-11-13 增加网盘分享解析与下载（`netdisk_share`）、九个平台适配器、下载任务页与 `credentials` CLI 子命令，注册工具数 13。第 19 节记录各轮证据，第 23 节记录桌面端与中继的实现细节。
 >
 > 实施方式：按本文的任务依次交付，每个任务经过验证后继续；使用 `superpowers:executing-plans` 协调，独立模块可交给子代理。项目已按用户要求初始化 Git（`main` 分支）并按阶段提交，但不发布远程服务。
 
@@ -549,7 +549,7 @@ export interface EnvironmentReport {
 
 ## 8. 工具清单
 
-首版六个示例工具见 8.1–8.6；8.7 集中记录后来追加的影音、去水印、格式转换、照片压缩与 XLSX 表格分析；8.9、8.10 记录网盘分享解析与下载。当前共 14 个注册工具。
+首版六个示例工具见 8.1–8.6；8.7 集中记录后来追加的影音、去水印、格式转换、照片压缩与 XLSX 表格分析；8.9、8.10 记录网盘分享解析与下载。当前共 13 个注册工具。
 
 ### 8.1 文件整理预览：`files_plan`
 
@@ -1531,7 +1531,7 @@ node "D:/HenryChips/dist/server/adapters/mcp/main.js" --config "D:/HenryChips/wo
 
 ### 2026-11-13：网盘分享解析与下载
 
-- 新增网盘工具 `netdisk_share`（解析与下载合一）与九个平台适配器，注册工具数从 12 增到 14。设计文档 `docs/superpowers/specs/2026-11-12-netdisk-resolve-and-download-design.md`，实施计划 `docs/superpowers/plans/2026-11-12-netdisk-resolve-and-download.md`。
+- 新增网盘工具 `netdisk_share`（解析与下载合一）与九个平台适配器，注册工具数从 12 增到 13。设计文档 `docs/superpowers/specs/2026-11-12-netdisk-resolve-and-download-design.md`，实施计划 `docs/superpowers/plans/2026-11-12-netdisk-resolve-and-download.md`。
 - **执行方式**：用户要求"全部做完后再审查"，所以取消了逐任务评审，改为全部实现完再统一审查；代价是评审发现的缺陷（如跨主机凭证泄漏、假绿的契约测试、解码路径挂死）要到很晚才暴露，所以每个任务仍然跑 `npm test`、`npm run typecheck` 与 `npm run test:web`。三个子代理在适配器上零产出（预算全花在找真实分享链接上），剩余适配器与文档由主线程直接写。
 - **真实平台验证**：只有蓝奏云端到端跑通。分享 `https://wwx.lanzoui.com/abc` 列出 `站长工具箱.rar`，直链在 `zip3.webgetstore.com` 上且支持续传，带返回的请求头抓取得到 2,068,480 字节、开头 `4d 5a`，Neat Download Manager 也接受该链接。**其余八家只有单元测试，未对真实平台验证。**
 - **实测暴露的平台特性**：蓝奏云的内层页面每次给的是一次性 `sign` 令牌；取链端点是 `domain1`/`domain2` 的 `ajaxfile.php?file=<id>`；平台答应用 `text/json` 与 gzip，所以该处必须显式接受压缩。
