@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { useEffect, useState } from 'react';
 import { isRecord } from '../api.js';
 import { formatNumber } from '../presentation.js';
 import { CopyButton } from './CopyButton.js';
@@ -27,10 +28,40 @@ export function curlCommand(link: NetdiskLink): string {
   return ['curl', '-L', ...headers, '-o', `"${shellValue(link.name)}"`, `"${shellValue(link.url)}"`].join(' ');
 }
 
-export function NetdiskResult({ data }: { data: Record<string, unknown> }) {
+/**
+ * The files that can be downloaded, which are the ones of the share that are
+ * not folders. A folder has no file of its own to download.
+ */
+export function downloadableFiles(files: NetdiskFile[]): NetdiskFile[] {
+  return files.filter(file => !file.isDirectory);
+}
+
+/**
+ * The files that are picked. Before the user touches anything, every file is
+ * picked, because the usual case is to download the whole share.
+ */
+export function pickedPaths(files: NetdiskFile[], picked: string[] | null): string[] {
+  if (picked === null) return downloadableFiles(files).map(file => file.path);
+  return picked;
+}
+
+export function NetdiskResult({ data, onDownload }: { data: Record<string, unknown>; onDownload?: (paths: string[]) => void }) {
   const files = Array.isArray(data.files) ? data.files.filter(isRecord) as unknown as NetdiskFile[] : [];
   const links = Array.isArray(data.links) ? data.links.filter(isRecord) as unknown as NetdiskLink[] : [];
   const failures = Array.isArray(data.linkFailures) ? data.linkFailures.filter(isRecord) : [];
+  const downloadable = downloadableFiles(files);
+  const [selected, setSelected] = useState<string[] | null>(null);
+  // A new result holds other files, so the earlier choice does not apply to it.
+  useEffect(() => { setSelected(null); }, [data]);
+  function toggle(path: string) {
+    setSelected(previous => {
+      const current = previous ?? downloadable.map(file => file.path);
+      return current.includes(path) ? current.filter(item => item !== path) : [...current, path];
+    });
+  }
+  const chosen = pickedPaths(files, selected);
+  function selectAll() { setSelected(downloadable.map(file => file.path)); }
+  function selectNone() { setSelected([]); }
   const rows: ReactNode[][] = links.map(link => [
     valueText(link.name),
     formatNumber(link.sizeBytes),
@@ -48,6 +79,21 @@ export function NetdiskResult({ data }: { data: Record<string, unknown> }) {
         valueText(file.name), formatNumber(file.sizeBytes), valueText(file.path), valueText(file.modifiedAt),
       ])} />
     </section>
+    {downloadable.length > 0 && onDownload && <section><div className="result-section-heading"><h3>选择要下载的文件</h3><span>已选 {chosen.length} / {downloadable.length}</span></div>
+      <ul className="netdisk-picker">{downloadable.map(file => <li key={file.path}>
+        <label className="netdisk-picker-item">
+          <input type="checkbox" checked={chosen.includes(file.path)} onChange={() => toggle(file.path)} />
+          <span className="netdisk-picker-name">{valueText(file.name)}</span>
+          <span className="netdisk-picker-size">{formatNumber(file.sizeBytes)}</span>
+        </label></li>)}</ul>
+      <div className="netdisk-picker-actions">
+        <button type="button" className="button button-primary button-small" disabled={!chosen.length}
+          onClick={() => onDownload(chosen)}>下载选中的 {chosen.length} 个文件</button>
+        <button type="button" className="button button-secondary button-small" onClick={selectAll}>全选</button>
+        <button type="button" className="button button-quiet button-small" onClick={selectNone}>清空</button>
+      </div>
+      <p className="inline-note">下载会在后台进行，任务可以在「下载任务」页查看、暂停或继续。</p>
+    </section>}
     {rows.length > 0 && <section><div className="result-section-heading"><h3>下载直链</h3><span>{rows.length} 条</span></div>
       <DataTable label="下载直链列表" headers={['名称', '大小（字节）', '直链', '续传', '操作']} rows={rows} />
       <p className="inline-note">直链通常在十几分钟内过期；「复制 curl」会带上 Referer、Cookie 等必须一起发送的请求头。</p>

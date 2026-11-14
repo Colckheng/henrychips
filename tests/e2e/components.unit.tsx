@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { parseHTML } from 'linkedom';
 import { FormField } from '../../src/web/components/FormField.js';
 import { CsvResult } from '../../src/web/components/CsvResult.js';
-import { NetdiskResult, curlCommand } from '../../src/web/components/NetdiskResult.js';
+import { NetdiskResult, curlCommand, downloadableFiles, pickedPaths } from '../../src/web/components/NetdiskResult.js';
 import { ResultPanel } from '../../src/web/components/ResultPanel.js';
 import { GenericResult } from '../../src/web/components/ResultData.js';
 
@@ -140,4 +140,61 @@ test('the netdisk result shows no credential of the account', () => {
   }));
   assert.equal(html.includes('credentialUsed'), false);
   assert.equal(html.includes('使用了登录态'), false);
+});
+
+test('a folder is not offered for download', () => {
+  const files = [
+    { path: 'a.bin', name: 'a.bin', sizeBytes: 10, isDirectory: false },
+    { path: 'folder/', name: 'folder', sizeBytes: null, isDirectory: true },
+  ];
+  const downloadable = downloadableFiles(files);
+  assert.equal(downloadable.length, 1);
+  assert.equal(downloadable[0]?.path, 'a.bin');
+});
+
+test('every file is picked before the user chooses', () => {
+  const files = [
+    { path: 'a.bin', name: 'a.bin', sizeBytes: 10, isDirectory: false },
+    { path: 'b.bin', name: 'b.bin', sizeBytes: 20, isDirectory: false },
+  ];
+  // The usual case is to download the whole share, so nothing is picked by hand.
+  assert.deepEqual(pickedPaths(files, null), ['a.bin', 'b.bin']);
+  // Once the user chooses, only the chosen ones are downloaded.
+  assert.deepEqual(pickedPaths(files, ['b.bin']), ['b.bin']);
+  assert.deepEqual(pickedPaths(files, []), []);
+});
+
+test('the picker offers the files of the share', () => {
+  const html = renderToStaticMarkup(createElement(NetdiskResult, {
+    data: {
+      platform: 'lanzou', platformLabel: '蓝奏云', shareId: 'abc', title: '示例',
+      fileCount: 2, totalBytes: 30,
+      files: [
+        { path: 'a.bin', name: 'a.bin', sizeBytes: 10, isDirectory: false },
+        { path: 'b.bin', name: 'b.bin', sizeBytes: 20, isDirectory: false },
+      ],
+      links: [], linkFailures: [], credentialUsed: false, warnings: [],
+    },
+    onDownload: () => {},
+  }));
+  // Both files are offered, and the count says how many of them are picked.
+  assert.match(html, /选择要下载的文件/);
+  assert.match(html, /a\.bin/);
+  assert.match(html, /b\.bin/);
+  assert.match(html, /已选/);
+  assert.match(html, /下载选中的 2 个文件/);
+});
+
+test('no picker is shown when the share holds no file', () => {
+  const html = renderToStaticMarkup(createElement(NetdiskResult, {
+    data: {
+      platform: 'lanzou', platformLabel: '蓝奏云', shareId: 'abc', title: '示例',
+      fileCount: 1, totalBytes: 0,
+      files: [{ path: 'folder/', name: 'folder', sizeBytes: null, isDirectory: true }],
+      links: [], linkFailures: [], credentialUsed: false, warnings: [],
+    },
+    onDownload: () => {},
+  }));
+  // A folder has no file of its own, so there is nothing to pick.
+  assert.equal(html.includes('选择要下载的文件'), false);
 });

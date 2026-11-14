@@ -12,6 +12,8 @@ const statusLabels: Record<string, string> = {
 
 /** The tasks that are still moving; the finished ones wait in the table. */
 const activeStatuses = new Set(['queued', 'preparing', 'downloading', 'verifying']);
+/** The tasks that can be picked up again; the manager accepts these two only. */
+const resumableStatuses = new Set(['paused', 'failed']);
 
 function progressText(task: DownloadTaskView): string {
   if (!task.totalBytes) return '—';
@@ -64,17 +66,19 @@ export function Downloads() {
       {note && <p className="inline-note" role="status">{note}</p>}
       {!error && !tasks.length && <EmptyState title="还没有下载任务">在网盘解析结果里选择文件后即可开始下载。</EmptyState>}
       {tasks.length > 0 && <DataTable label="下载任务列表" headers={['文件', '平台', '状态', '进度', '速度', '更新时间', '操作']} rows={tasks.map(task => [
-        <span>{task.fileName}<code className="history-tool-id">{task.filePath}</code></span>,
+        <span className="download-task-name">{task.fileName}<code className="history-tool-id">{task.filePath}</code></span>,
         task.platform,
         <span className={`status-badge ${task.status === 'completed' ? 'status-success' : task.status === 'failed' ? 'status-danger' : 'status-neutral'}`}>
           {statusLabels[task.status] ?? task.status}</span>,
         progressText(task),
-        task.speedBytesPerSecond ? `${formatNumber(task.speedBytesPerSecond)} B/s` : '—',
+        task.speedBytesPerSecond ? <span className="numeric-cell">{formatNumber(task.speedBytesPerSecond)} B/s</span> : '—',
         <time dateTime={task.updatedAt}>{formatDate(task.updatedAt)}</time>,
         <span style={{ display: 'inline-flex', gap: 6 }}>
           {activeStatuses.has(task.status)
             ? <button type="button" className="button button-secondary button-small" onClick={() => void act(() => pauseDownload(task.id), '任务已暂停。')}><Pause size={14} aria-hidden="true" />暂停</button>
-            : <button type="button" className="button button-secondary button-small" onClick={() => void act(() => resumeDownload(task.id), '任务已重新排队。')}><Play size={14} aria-hidden="true" />继续</button>}
+            : resumableStatuses.has(task.status)
+              ? <button type="button" className="button button-secondary button-small" onClick={() => void act(() => resumeDownload(task.id), '任务已重新排队。')}><Play size={14} aria-hidden="true" />继续</button>
+              : null}
           <button type="button" className="button button-secondary button-small" onClick={() => void act(() => removeDownload(task.id), '任务已删除。')}><Trash2 size={14} aria-hidden="true" />删除</button>
         </span>,
       ])} />}

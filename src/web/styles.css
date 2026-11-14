@@ -325,6 +325,14 @@ code, pre { font-family: var(--font-mono); }
 .result-section-heading h3 { font-size: var(--text-sm); font-weight: 600; }
 .result-section-heading span { color: var(--muted); font-size: 10px; }
 .stream-url { display: inline-block; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.netdisk-picker { list-style: none; margin: 0 0 var(--space-3); padding: 0; border: 1px solid var(--border); border-radius: var(--radius-sm); max-height: 320px; overflow-y: auto; }
+.netdisk-picker li + li { border-top: 1px solid var(--border); }
+.netdisk-picker-item { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); cursor: pointer; min-width: 0; }
+.netdisk-picker-item:hover { background: var(--background); }
+.netdisk-picker-item input { flex: none; accent-color: var(--primary); width: 15px; height: 15px; margin: 0; }
+.netdisk-picker-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; font-size: var(--text-xs); }
+.netdisk-picker-size { flex: none; color: var(--muted); font-family: var(--font-mono); font-size: var(--text-xs); }
+.netdisk-picker-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .table-scroll { max-width: 100%; min-width: 0; overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); scrollbar-color: var(--border-strong) transparent; }
 table { width: 100%; border-collapse: collapse; font-size: var(--text-xs); text-align: left; }
 th { font-weight: 500; color: var(--muted-strong); background: var(--surface-soft); white-space: nowrap; }
@@ -334,7 +342,7 @@ tbody tr:hover { background: var(--background); }
 td { max-width: 360px; overflow-wrap: anywhere; min-width: 65px; }
 td code { font-size: var(--text-xs); }
 .table-empty { color: var(--muted); text-align: center; padding: var(--space-6); }
-.numeric-cell { font-family: var(--font-mono); white-space: nowrap; }
+.numeric-cell { font-family: var(--font-mono); white-space: nowrap; overflow-wrap: normal; }
 .status-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 500; border-radius: var(--radius-sm); padding: 3px 8px; white-space: nowrap; }
 .status-success { background: var(--success-soft); color: var(--success); }
 .status-danger { background: var(--danger-soft); color: var(--danger); }
@@ -372,6 +380,8 @@ td code { font-size: var(--text-xs); }
 .history-tool { color: var(--foreground); font-weight: 500; white-space: nowrap; }
 .history-tool:hover { color: var(--primary); text-decoration: underline; text-underline-offset: 3px; }
 .history-tool-id { display: block; color: var(--muted); font-size: 10px; margin-top: var(--space-1); }
+/* A file name reads as a word, so it breaks between its words and not in the middle of one. */
+.download-task-name { display: block; min-width: 180px; overflow-wrap: normal; word-break: keep-all; line-height: 1.5; }
 .history-error-code { display: block; color: var(--danger); font-size: 9px; margin-top: 5px; }
 .source-badge { font: 10px var(--font-mono); color: var(--muted-strong); }
 .run-id { display: block; font-size: 10px; color: var(--muted); max-width: 150px; overflow-wrap: anywhere; }

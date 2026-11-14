@@ -25,12 +25,12 @@ function MediaStreams({ data }: { data: Record<string, unknown> }) {
   </section>;
 }
 
-function ResultView({ tool, data }: { tool: string; data: Record<string, unknown> }) {
+function ResultView({ tool, data, onDownload }: { tool: string; data: Record<string, unknown>; onDownload?: (paths: string[]) => void }) {
   if (tool === 'csv_summary') return <CsvResult data={data} />;
   if (tool === 'files_plan') return <FilesResult data={data} />;
   if (tool === 'text_stats') return <><Metrics data={data} keys={['characters', 'charactersWithoutWhitespace', 'lines', 'hanCharacters', 'latinWords']} /><p className="inline-note">字符按 Unicode 码点统计；拉丁词数不代表通用分词结果。</p></>;
   if (tool === 'bilibili_video') return <MediaStreams data={data} />;
-  if (tool === 'netdisk_resolve') return <NetdiskResult data={data} />;
+  if (tool === 'netdisk_resolve') return <NetdiskResult data={data} onDownload={onDownload} />;
   return <GenericResult data={data} />;
 }
 
@@ -62,10 +62,11 @@ function OutputFolderButton() {
   </div>;
 }
 
-export function ResultPanel({ tool, result, status, error, retry, progress, restored, onRestore }: {
+export function ResultPanel({ tool, result, status, error, retry, progress, restored, onRestore, onDownload }: {
   tool: string; result?: ToolResult; status: 'idle' | 'running' | 'done' | 'cancelled';
   error?: { message: string; code?: string }; retry: () => void; progress?: RunProgress;
   restored?: boolean; onRestore?: () => void;
+  onDownload?: (paths: string[]) => void;
 }) {
   const [view, setView] = useState<'preview' | 'json'>('preview');
   const [downloadError, setDownloadError] = useState(false);
@@ -106,7 +107,7 @@ export function ResultPanel({ tool, result, status, error, retry, progress, rest
         </div>
         {downloadError && <ErrorNotice message="下载未能开始，请重试，或复制完整 JSON。" retry={download} retryLabel="重试下载" />}
         {view === 'json' ? <pre className="code-block result-json" tabIndex={0} data-testid="result-json">{json}</pre>
-          : result.ok ? <ResultView tool={tool} data={result.data} /> : <p className="inline-note">参数已保留，可修改后重试；完整错误信息可在 JSON 视图中查看。</p>}
+          : result.ok ? <ResultView tool={tool} data={result.data} onDownload={onDownload} /> : <p className="inline-note">参数已保留，可修改后重试；完整错误信息可在 JSON 视图中查看。</p>}
         <div className="result-meta"><span>RUN ID</span><code>{result.meta.runId}</code><span>{result.meta.source}</span></div>
         <OutputFolderButton />
       </>}
