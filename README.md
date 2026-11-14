@@ -18,6 +18,7 @@
 
 ---
 
+
 ## 功能特性
 
 ### 工具内核（`src/core/`）
@@ -305,6 +306,7 @@ npm run desktop        # 构建后启动 Electron 外壳
 | `npm run relay:pair -- <地址> <配对码> [设备名] [--token <令牌>]` | 配对设备，凭据写入配置的 `relay` 段 |
 
 ---
+
 
 
 ## 配置
