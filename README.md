@@ -51,7 +51,7 @@
 | `bilibili_video` | `bilibili-video.ts` | `network:public` `files:write` | 解析 B 站稿件与媒体直链；先取 `buvid3` cookie，再调 `view`/`playurl`；DASH 可分离音轨；CDN 放行 80/443/8080/8082 |
 | `douyin_video` | `douyin-video.ts` + `douyin-core.ts` | `network:public` `files:write` `browser:local` | 解析抖音作品：标题、作者、封面、视频/音轨直链，可分别保存 |
 | `douyin_nowatermark` | `douyin-nowatermark.ts` | `network:public` `files:write` `browser:local` | 对比平台播放地址（无水印）与下载地址（带 `watermark=1`），可单独保存无水印视频或音轨 |
-| `netdisk_share` | `netdisk-share.ts` + `netdisk/adapters/*` | `network:public` `files:write` `downloader:local` | 解析网盘分享链接，列出分享内的文件并给出已验证的下载直链与所需请求头；网页上勾选文件即可下载（分片 + 断点续传），也可推给本机 Neat Download Manager。支持蓝奏云、光鸭云盘、夸克网盘、UC 网盘、115 网盘、139（和彩云）、123 云盘、迅雷网盘、百度网盘 |
+| `netdisk_share` | `netdisk-share.ts` + `netdisk/` | `network:public` `files:write` `downloader:local` | 解析网盘分享链接，列出分享内的文件并给出已验证的下载直链与所需请求头；网页上勾选文件即可下载（分片 + 断点续传），也可推给本机 Neat Download Manager。支持蓝奏云、光鸭云盘、夸克网盘、UC 网盘、115 网盘、139（和彩云）、123 云盘、迅雷网盘、百度网盘 |
 
 > 抖音取数靠 `src/core/douyin-session.ts`：用 `playwright-core` 驱动**本机已安装的 Chrome** 做一次性引导，抓到 `uifid` 与签名参数模板后交给 `abogus` 自签名直连接口；会话缓存在状态目录 `douyin-session.json`（约 6 小时）。
 
@@ -79,7 +79,7 @@ npm run cli -- credentials clear baidu
 | --- | --- | --- |
 | 网页工作台 | `src/adapters/http/`（Fastify 5）+ `src/web/`（React 19） | `http://127.0.0.1:4318/`，四个页面：工具箱、执行记录、AI 接入、服务器 |
 | CLI | `src/adapters/cli/main.ts` | `list` / `inspect` / `run`，输出 JSON；`SIGINT` 取消并以退出码 130 结束 |
-| MCP | `src/adapters/mcp/server.ts`、`main.ts` | stdio 传输，把 **全部 12 个工具**注册为 MCP 工具，带 `structuredContent` 与 `readOnlyHint`/`destructiveHint`/`openWorldHint` 注解 |
+| MCP | `src/adapters/mcp/server.ts`、`main.ts` | stdio 传输，把 **全部 13 个工具**注册为 MCP 工具，带 `structuredContent` 与 `readOnlyHint`/`destructiveHint`/`openWorldHint` 注解 |
 
 ### HTTP API（`src/adapters/http/routes.ts`）
 
@@ -244,7 +244,7 @@ node dist/server/adapters/cli/main.js run csv_summary --input-file sandbox/sampl
 }
 ```
 
-客户端会看到全部 **12 个工具**。
+客户端会看到全部 **13 个工具**。
 
 ### 7. 桌面端
 
@@ -260,7 +260,7 @@ npm run desktop        # 构建后启动 Electron 外壳
 | --- | --- |
 | `src/contracts/` | 可序列化的公共类型：`tool.ts`（工具描述、字段定义、能力、文件/网络/进程接口）、`run.ts`（运行来源、结果、错误码）、`relay.ts`（中继状态） |
 | `src/core/` | 内核：注册、定义、执行器、文件读写边界、公网客户端、进程探测、运行摘要、进度、配置、错误、内置排版与字体 |
-| `src/tools/` | 12 个工具的实现与 `index.ts` 注册表 |
+| `src/tools/` | 13 个工具的实现与 `index.ts` 注册表 |
 | `src/adapters/http/` | Fastify 应用（`app.ts`）、路由（`routes.ts`）、独立启动入口（`server.ts`） |
 | `src/adapters/cli/` | CLI 入口（`list`/`inspect`/`run`） |
 | `src/adapters/mcp/` | MCP server 构造（`server.ts`）与 stdio 入口（`main.ts`） |
@@ -353,7 +353,7 @@ npm run desktop        # 构建后启动 Electron 外壳
 | `npm run test:web` | `tests/e2e/*.unit.ts(x)`：表单序列化、结果渲染组件 | 10 |
 | `npm run test:e2e` | `tests/e2e/*.spec.ts`：Playwright + 真实 Chrome，覆盖目录检索、填示例、跑工具、进度、跨页面保持、关标签页后取回结果、窄屏（375/1440）、键盘可达、错误重试等 | 20 |
 | `npm run test:desktop` | `tests/electron/desktop.spec.ts`：窗口渲染工作台、关窗仅隐藏且服务存活、托盘菜单项、开机自启开关 | 4 |
-| `npm run test:production` | `tests/production.test.ts`：非项目目录启动**编译产物**，比对 CLI / MCP / HTTP 三条路径结果一致，校验 MCP 暴露 12 个工具、PDF Worker 可用 | 1 |
+| `npm run test:production` | `tests/production.test.ts`：非项目目录启动**编译产物**，比对 CLI / MCP / HTTP 三条路径结果一致，校验 MCP 暴露 13 个工具、PDF Worker 可用 | 1 |
 
 两个 Playwright 配置是分开的：`playwright.config.ts` 跑浏览器（`testDir: ./tests/e2e`，`webServer` 先 `npm run build && npm start` 再打 `http://127.0.0.1:4318/api/health`，**不复用已在运行的服务**以免测到旧代码）；`playwright.electron.config.ts` 跑 Electron 外壳（`testDir: ./tests/electron`）。
 
@@ -405,7 +405,7 @@ npm run relay:node
 
 | 文档 | 内容 |
 | --- | --- |
-| [`docs/superpowers/plans/2026-11-02-personal-workstation-plan.md`](docs/superpowers/plans/2026-11-02-personal-workstation-plan.md) | 架构设计与实施计划（活文档）：架构选型、目录、工具契约、12 个工具的逐条规格与验收、配置与网络边界、测试矩阵、各轮实施记录与验证证据、桌面端与中继细节 |
+| [`docs/superpowers/plans/2026-11-02-personal-workstation-plan.md`](docs/superpowers/plans/2026-11-02-personal-workstation-plan.md) | 架构设计与实施计划（活文档）：架构选型、目录、工具契约、13 个工具的逐条规格与验收、配置与网络边界、测试矩阵、各轮实施记录与验证证据、桌面端与中继细节 |
 | [`deploy/RELAY-DEPLOY.md`](deploy/RELAY-DEPLOY.md) | 中继服务器部署：Node 准备、目录规划、systemd 配置、端口放行、TLS、手机端调用示例、注意事项 |
 
 应用内也有对应入口：工作台的「AI 接入」页给出可复制的 MCP 配置与 CLI 命令，「服务器」页给出设备列表、身份清单、派任务/查结果/查历史的接口说明（内容由 `src/adapters/http/routes.ts` 的 `aiUsageGuide()` 生成）。
