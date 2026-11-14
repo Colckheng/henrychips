@@ -60,7 +60,9 @@ export const douyinNoWatermarkTool = defineTool({
     if (!noWatermark) throw new ToolError('FILE_NOT_FOUND', '该作品没有返回可用地址，可能是图文作品或已受限。');
     const warnings: string[] = [];
     if (markedUrl && cleanUrl) warnings.push('该作品同时提供带水印地址，可对比确认差异。');
-    if (source === 'watermarked') warnings.push('当前保留水印：使用的是平台下载源，画面右下角带水印。');
+    if (!cleanUrl && markedUrl) warnings.push('该作品只返回了带水印地址，已按当前设置使用带水印源。');
+    if (!markedUrl && cleanUrl && watermark === 'keep') warnings.push('请求保留水印，但该作品只返回了无水印地址，已使用无水印源。');
+    if (watermark === 'keep' && source === 'watermarked') warnings.push('当前保留水印：使用的是平台下载源，画面右下角带水印。');
     const audioUrl = video.audioUrls[0] ?? null;
     if (parts !== 'video' && !audioUrl) warnings.push('该作品没有返回独立音轨地址。');
     let savedFile: { relativePath: string; bytes: number } | null = null;

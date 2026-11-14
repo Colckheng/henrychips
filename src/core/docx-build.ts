@@ -15,8 +15,7 @@ function cellOf(text: string): TableCell {
 }
 
 export async function renderBlocksToDocx(blocks: Block[], title?: string): Promise<Uint8Array> {
-  const children: Paragraph[] = [];
-  const tables: Table[] = [];
+  const children: Array<Paragraph | Table> = [];
   for (const block of blocks) {
     if (block.kind === 'heading') {
       const level = [HeadingLevel.HEADING_1, HeadingLevel.HEADING_2, HeadingLevel.HEADING_3, HeadingLevel.HEADING_4, HeadingLevel.HEADING_5, HeadingLevel.HEADING_6][Math.min(block.level, 6) - 1];
@@ -54,13 +53,13 @@ export async function renderBlocksToDocx(blocks: Block[], title?: string): Promi
         tableHeader: block.header && index === 0,
         children: row.map(cell => cellOf(cell)),
       }));
-      tables.push(new Table({ rows }));
+      children.push(new Table({ rows }));
       continue;
     }
   }
   const document = new Document({
     title,
-    sections: [{ children: [...children, ...tables] }],
+    sections: [{ children }],
   });
   return new Uint8Array(await Packer.toBuffer(document));
 }

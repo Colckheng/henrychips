@@ -5,6 +5,7 @@
   "files": [
     "electron/**/*",
     "dist/**/*",
+    "assets/fonts/**/*",
     "build/icon.png",
     "package.json"
   ],

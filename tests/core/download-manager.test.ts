@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import { DownloadManager } from '../../src/core/download/manager.js';
+import { DownloadManager, verifyFileSize } from '../../src/core/download/manager.js';
 import type { PublicHttp } from '../../src/contracts/tool.js';
 import type { NetdiskLink } from '../../src/tools/netdisk/types.js';
 
@@ -289,4 +289,52 @@ test('gives a file of the same name a number of its own', async t => {
   // The second download of the same file does not overwrite the first one.
   assert.notEqual(second.outputPath, first.outputPath);
   assert.equal(second.outputPath, 'a-1.bin');
+});
+
+test('completes a file that is shorter than announced with the real size', async t => {
+  const state = await mkdtemp(path.join(tmpdir(), 'workstation-tasks-short-'));
+  const output = await mkdtemp(path.join(tmpdir(), 'workstation-tasks-short-out-'));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  t.after(() => rm(output, { recursive: true, force: true }));
+  // The platform announces 20 bytes, the file really has 13, and the real
+  // size cannot be asked for.
+  const payload = Buffer.from('0123456789xyz');
+  const http = {
+    ...fakeHttp(payload),
+    getRaw: async () => ({ finalUrl: '', status: 200, contentType: '', bytes: new Uint8Array(), setCookie: [], headers: {} }),
+    getStream: async (url: string, _signal: AbortSignal, options?: { headers?: Record<string, string> }) => {
+      const range = options?.headers?.Range ?? '';
+      const matched = /bytes=(\d+)-(\d*)/.exec(range);
+      const start = Number(matched?.[1] ?? 0);
+      const end = matched?.[2] ? Number(matched[2]) : payload.length - 1;
+      const slice = payload.subarray(start, Math.min(end + 1, payload.length));
+      return {
+        finalUrl: url, status: 206, contentType: 'application/octet-stream',
+        contentLength: slice.length, body: Readable.from([slice]),
+        headers: { 'content-range': `bytes ${start}-${start + slice.length - 1}/${payload.length}` },
+      };
+    },
+  } as unknown as PublicHttp;
+  const manager = new DownloadManager({ http, stateDirectory: state, outputDirectory: output, outputBytesLimit: 1_048_576, connections: 2 });
+  t.after(() => manager.shutdown());
+  const task = manager.create(inputOf({ sizeBytes: 20, link: linkOf({ sizeBytes: 20, rangeSupported: true }) }));
+  await until(manager, task.id, ['completed', 'failed']);
+  const done = manager.get(task.id);
+  assert.equal(done?.status, 'completed');
+  // The task carries the bytes that really arrived, not the announced size.
+  assert.equal(done?.bytesWritten, payload.length);
+  assert.equal(done?.totalBytes, payload.length);
+  const onDisk = await readFile(path.join(output, 'a.bin'));
+  assert.equal(onDisk.length, payload.length);
+  assert.equal(onDisk.toString(), '0123456789xyz');
+});
+
+test('checks a downloaded file against the length it should have', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'workstation-verify-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = path.join(directory, 'a.bin');
+  await writeFile(file, Buffer.from('hello'));
+  assert.deepEqual(await verifyFileSize(file, 5), { ok: true, actual: 5 });
+  assert.deepEqual(await verifyFileSize(file, 6), { ok: false, actual: 5 });
+  assert.deepEqual(await verifyFileSize(path.join(directory, 'missing.bin'), 5), { ok: false, actual: null });
 });

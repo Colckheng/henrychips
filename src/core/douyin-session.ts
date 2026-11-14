@@ -1,4 +1,5 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { signParams, signWebUrl } from 'abogus';
@@ -33,7 +34,18 @@ export async function readSession(stateDirectory: string): Promise<DouyinSession
 
 export async function writeSession(stateDirectory: string, session: DouyinSession): Promise<void> {
   await mkdir(stateDirectory, { recursive: true });
-  await writeFile(sessionFile(stateDirectory), JSON.stringify(session, null, 2), { encoding: 'utf8', mode: 0o600 });
+  const destination = sessionFile(stateDirectory);
+  // Atomic write (same pattern as RunStore.append): write a unique temp file
+  // in the same directory, then rename over the destination, so two tools
+  // bootstrapping in parallel cannot leave a half-written JSON behind.
+  const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, JSON.stringify(session, null, 2), { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    await rename(temporary, destination);
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 /**
@@ -44,10 +56,22 @@ export async function writeSession(stateDirectory: string, session: DouyinSessio
  */
 export async function bootstrapSession(awemeId: string, signal: AbortSignal): Promise<{ session: DouyinSession; detail?: Record<string, unknown> }> {
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  // Races a promise against the caller's cancel signal, so cancelling also
+  // interrupts launch / navigation instead of only the wait loops below.
+  // The underlying Playwright work is abandoned on cancel; the finally block
+  // below closes the browser either way.
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    if (signal.aborted) reject(new ToolError('CANCELLED', '本次执行已取消。'));
+    else signal.addEventListener('abort', () => reject(new ToolError('CANCELLED', '本次执行已取消。')), { once: true });
+  });
+  // Mark the rejection handled up front: an abort landing between two races
+  // must not surface as an unhandled rejection before the next race sees it.
+  void cancelled.catch(() => undefined);
+  const raceCancel = <T>(promise: Promise<T>): Promise<T> => Promise.race([promise, cancelled]);
   try {
-    browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--disable-blink-features=AutomationControlled'] });
-    const context = await browser.newContext({ userAgent, locale: 'zh-CN', viewport: { width: 1440, height: 900 } });
-    const page = await context.newPage();
+    browser = await raceCancel(chromium.launch({ channel: 'chrome', headless: true, args: ['--disable-blink-features=AutomationControlled'] }));
+    const context = await raceCancel(browser.newContext({ userAgent, locale: 'zh-CN', viewport: { width: 1440, height: 900 } }));
+    const page = await raceCancel(context.newPage());
     let captured = '';
     let detail: Record<string, unknown> | undefined;
     page.on('request', request => {
@@ -60,20 +84,29 @@ export async function bootstrapSession(awemeId: string, signal: AbortSignal): Pr
         if (payload?.aweme_detail) detail = payload.aweme_detail;
       } catch { /* the page may answer with a non-JSON body */ }
     });
-    await page.goto(`https://www.douyin.com/video/${awemeId}`, { waitUntil: 'domcontentloaded', timeout: 45_000 }).catch(() => undefined);
-    for (let attempt = 0; attempt < 30 && !captured; attempt++) {
+    // Guidance budget (~90 s total, inside the tool's 120 s timeout): goto
+    // and reload get ~30 s each, the two capture waits ~20 s and ~10 s,
+    // leaving room for launch and the signed detail request.
+    await raceCancel(page.goto(`https://www.douyin.com/video/${awemeId}`, { waitUntil: 'domcontentloaded', timeout: 30_000 })).catch((error: unknown) => {
+      // Navigation timeouts are tolerated (the capture wait below still
+      // runs); a cancellation must propagate instead of being swallowed.
+      if (error instanceof ToolError && error.code === 'CANCELLED') throw error;
+    });
+    for (let attempt = 0; attempt < 20 && !captured; attempt++) {
       if (signal.aborted) throw new ToolError('CANCELLED', '本次执行已取消。');
-      await page.waitForTimeout(1000);
+      await raceCancel(page.waitForTimeout(1000));
     }
     if (!captured) {
       // The page occasionally skips the detail call; one reload usually helps.
-      await page.reload({ waitUntil: 'domcontentloaded', timeout: 45_000 }).catch(() => undefined);
-      for (let attempt = 0; attempt < 20 && !captured; attempt++) {
+      await raceCancel(page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 })).catch((error: unknown) => {
+        if (error instanceof ToolError && error.code === 'CANCELLED') throw error;
+      });
+      for (let attempt = 0; attempt < 10 && !captured; attempt++) {
         if (signal.aborted) throw new ToolError('CANCELLED', '本次执行已取消。');
-        await page.waitForTimeout(1000);
+        await raceCancel(page.waitForTimeout(1000));
       }
     }
-    const cookies = Object.fromEntries((await context.cookies()).map(cookie => [cookie.name, cookie.value]));
+    const cookies = Object.fromEntries((await raceCancel(context.cookies())).map(cookie => [cookie.name, cookie.value]));
     if (!captured) throw new ToolError('FILE_NOT_FOUND', '未能读取该作品：作品可能不存在或已下架，也可能是抖音当前对本机发起了风控限流，请稍后重试。');
     const url = new URL(captured);
     const template: Record<string, string> = {};
@@ -111,6 +144,8 @@ export interface DetailResult {
   ok: boolean;
   awemeDetail?: Record<string, unknown>;
   status: number;
+  /** Explicit platform error (code/message) when the detail call was refused; absent for empty or signature-like failures. */
+  platformError?: { code?: number; message?: string };
 }
 
 /** Signs and sends the detail request with the workstation's own client. */
@@ -145,6 +180,22 @@ export async function requestDetail(session: DouyinSession, awemeId: string, htt
     }
     throw error;
   }
-  const data = response.data as { aweme_detail?: Record<string, unknown> } | null;
-  return { ok: Boolean(data?.aweme_detail), awemeDetail: data?.aweme_detail, status: response.status };
+  const data = response.data as { aweme_detail?: Record<string, unknown>; status_code?: number; status_msg?: string } | null;
+  const platformError = !data?.aweme_detail ? parsePlatformError(data, response.status) : undefined;
+  return { ok: Boolean(data?.aweme_detail), awemeDetail: data?.aweme_detail, status: response.status, ...(platformError ? { platformError } : {}) };
+}
+
+/**
+ * Surfaces an explicit platform refusal (error code/message, or a non-200
+ * HTTP status) so callers can report it directly. An empty payload with no
+ * error fields is not a refusal — it is the signature-like case that may
+ * still be worth one browser retry.
+ */
+function parsePlatformError(data: { status_code?: number; status_msg?: string } | null, httpStatus: number): { code?: number; message?: string } | undefined {
+  const code = typeof data?.status_code === 'number' ? data.status_code : undefined;
+  const message = typeof data?.status_msg === 'string' && data.status_msg ? data.status_msg : undefined;
+  if (code !== undefined && code !== 0) return { code, message };
+  if (message) return { code, message };
+  if (httpStatus !== 200) return { code: httpStatus, message: `抖音接口返回 HTTP ${httpStatus}` };
+  return undefined;
 }

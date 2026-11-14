@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { defineTool } from '../core/define-tool.js';
 import { ToolError } from '../core/errors.js';
 import type { ToolContext } from '../contracts/tool.js';
+import type { ErrorCode } from '../contracts/run.js';
 import { writeUniqueFile } from '../core/file-access.js';
 
 const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -22,6 +23,26 @@ function cookiesFrom(setCookie: string[]): string {
     .map(line => line.split(';')[0]?.trim() ?? '')
     .filter(pair => pair && pair.includes('='));
   return values.join('; ');
+}
+
+/**
+ * Maps the platform error codes we are sure about; anything else is reported
+ * with the original code and the platform's own message instead of a generic
+ * "could not read this video" line.
+ */
+function bilibiliError(code: number, message: string | undefined, fallbackCode: ErrorCode = 'FILE_NOT_FOUND'): ToolError {
+  const platform = message ? `平台原话：${message}` : '平台未说明原因';
+  switch (code) {
+    case -404:
+      return new ToolError('FILE_NOT_FOUND', `该稿件不存在（B站错误码 ${code}，${platform}）。`);
+    case -403:
+    case 62002:
+      return new ToolError('ACCESS_DENIED', `该稿件不可见或需要登录（B站错误码 ${code}，${platform}）。`);
+    case -412:
+      return new ToolError('NETWORK_ERROR', `B站风控限流，请稍后再试（B站错误码 ${code}，${platform}）。`);
+    default:
+      return new ToolError(fallbackCode, `B站返回错误 ${code}（${platform}）。`);
+  }
 }
 
 interface ViewResponse {
@@ -83,6 +104,7 @@ export const bilibiliVideoTool = defineTool({
       { label: '仅音频（音轨分离）', value: 'audio' },
       { label: '视频 + 音频', value: 'both' },
     ] },
+    { name: 'page', label: '分 P 序号', type: 'text', description: '多 P 稿件选第几 P，默认 1；超出稿件分 P 数会报错。' },
   ],
   examples: [
     { label: '解析示例视频', input: { url: 'BV1ugxq6HEfH' } },
@@ -92,6 +114,7 @@ export const bilibiliVideoTool = defineTool({
     download: z.boolean().default(false),
     parts: z.enum(['video', 'audio', 'both']).default('video'),
     watermark: z.enum(['remove', 'keep']).default('remove'),
+    page: z.number().int().min(1).default(1),
   }),
   outputSchema: z.strictObject({
     bvid: z.string(),
@@ -101,6 +124,8 @@ export const bilibiliVideoTool = defineTool({
     owner: z.string(),
     cover: z.string(),
     pageCount: z.number(),
+    page: z.number(),
+    part: z.string(),
     source: z.enum(['original-dash', 'transcoded-mp4']),
     streams: z.array(z.strictObject({
       kind: z.enum(['video', 'audio']),
@@ -114,7 +139,7 @@ export const bilibiliVideoTool = defineTool({
     savedAudioFile: z.strictObject({ relativePath: z.string(), bytes: z.number() }).nullable(),
     warnings: z.array(z.string()),
   }),
-  async execute({ url, download, parts, watermark }, ctx) {
+  async execute({ url, download, parts, watermark, page = 1 }, ctx) {
     if (!ctx.http) throw new ToolError('ACCESS_DENIED', '当前环境未启用网络访问。');
     const bvid = bvidOf(url);
     // The public finger endpoint hands out the buvid3 cookie that the video
@@ -129,11 +154,20 @@ export const bilibiliVideoTool = defineTool({
     ctx.reportProgress?.({ phase: '读取稿件信息' });
     const viewResponse = await ctx.http.getJson(`https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`, ctx.signal, { headers });
     const view = viewResponse.data as ViewResponse;
-    if (!view || view.code !== 0 || !view.data?.pages?.length) {
+    if (!view || view.code !== 0) {
+      if (view && typeof view.code === 'number') throw bilibiliError(view.code, view.message);
       throw new ToolError('FILE_NOT_FOUND', '未能读取该视频，可能是稿件不存在、已失效或需要登录。');
     }
     const info = view.data;
-    const cid = info.pages![0].cid;
+    if (!info?.pages?.length) {
+      throw new ToolError('FILE_NOT_FOUND', '未能读取该视频，可能是稿件不存在、已失效或需要登录。');
+    }
+    const pages = info.pages;
+    const pageEntry = pages[page - 1];
+    if (!pageEntry) {
+      throw new ToolError('INVALID_INPUT', `第 ${page} 分 P 超出范围，该稿件共 ${pages.length} 分 P。`);
+    }
+    const cid = pageEntry.cid;
     const warnings: string[] = [];
     const streams: Array<{ kind: 'video' | 'audio'; label: string; codecs: string; url: string; sizeBytes: number | null }> = [];
     let savedFile: { relativePath: string; bytes: number } | null = null;
@@ -146,11 +180,17 @@ export const bilibiliVideoTool = defineTool({
     let audioBackups: string[] = [];
     const source = watermark === 'keep' ? 'transcoded-mp4' as const : 'original-dash' as const;
 
-    if (parts === 'video' || parts === 'both' || watermark === 'keep') {
+    // The single-file MP4 is only needed when the caller actually wants it:
+    // parts other than audio-only, with the watermark kept. Audio-only with
+    // the watermark kept must reach the DASH audio branch below instead of
+    // failing here when no MP4 comes back, and watermark removal never
+    // needs the MP4 at all.
+    if (parts !== 'audio' && watermark === 'keep') {
       const playResponse = await ctx.http.getJson(`https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=64&fnval=0&platform=html5&high_quality=1`, ctx.signal, { headers });
       const play = playResponse.data as PlayUrlResponse;
+      if (!play || play.code !== 0) throw bilibiliError(play?.code ?? -1, play?.message, 'UNSUPPORTED_FORMAT');
       const durl = play?.data?.durl?.[0];
-      if (!durl) throw new ToolError('UNSUPPORTED_FORMAT', '该视频没有返回可下载的 MP4 直链，可能需要登录或已限制下载。');
+      if (!durl) throw new ToolError('UNSUPPORTED_FORMAT', `该视频没有返回可下载的 MP4 直链，可能需要登录或已限制下载。${play.message ? `（B站返回：${play.message}）` : ''}`);
       if (play.data?.timelength) durationMs = play.data.timelength;
       combinedUrl = durl.url;
       streams.push({ kind: 'video', label: `MP4 清晰度 ${play.data?.quality ?? 64}`, codecs: 'avc1', url: durl.url, sizeBytes: durl.size ?? null });
@@ -158,8 +198,9 @@ export const bilibiliVideoTool = defineTool({
     if (parts !== 'video' || watermark === 'remove') {
       const playResponse = await ctx.http.getJson(`https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=64&fnval=16&fourk=1`, ctx.signal, { headers });
       const play = playResponse.data as PlayUrlResponse;
+      if (!play || play.code !== 0) throw bilibiliError(play?.code ?? -1, play?.message, 'UNSUPPORTED_FORMAT');
       const dash = play?.data?.dash;
-      if (!dash) throw new ToolError('UNSUPPORTED_FORMAT', '该视频没有返回 DASH 流信息，无法分离音轨或取原始流。');
+      if (!dash) throw new ToolError('UNSUPPORTED_FORMAT', `该视频没有返回 DASH 流信息，无法分离音轨或取原始流。${play.message ? `（B站返回：${play.message}）` : ''}`);
       if (!durationMs && typeof dash.duration === 'number') durationMs = dash.duration * 1000;
       for (const item of dash.video ?? []) streams.push({ kind: 'video', label: `视频 ${item.id}`, codecs: item.codecs, url: item.baseUrl, sizeBytes: null });
       for (const item of dash.audio ?? []) streams.push({ kind: 'audio', label: `音频 ${item.id}`, codecs: item.codecs, url: item.baseUrl, sizeBytes: null });
@@ -200,6 +241,8 @@ export const bilibiliVideoTool = defineTool({
       owner: info.owner?.name ?? '',
       cover: info.pic ?? '',
       pageCount: info.pages!.length,
+      page,
+      part: pageEntry.part ?? '',
       source,
       streams,
       audioUrl,

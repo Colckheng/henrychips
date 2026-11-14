@@ -14,7 +14,7 @@ export const csvSummaryTool = defineTool({
   ],
   examples: [{ label: '销售数据样例', input: { path: 'samples/sales.csv', delimiter: ',' } }],
   inputSchema: z.strictObject({ path: z.string().min(1), delimiter: z.enum([',', ';', '\t']).default(',') }),
-  outputSchema: z.strictObject({ rowCount: z.number().int(), columnCount: z.number().int(), columns: z.array(z.strictObject({ name: z.string(), emptyCount: z.number().int(), numeric: numericSchema.nullable() })), preview: z.array(z.record(z.string(), z.string())) }),
+  outputSchema: z.strictObject({ rowCount: z.number().int(), columnCount: z.number().int(), columns: z.array(z.strictObject({ name: z.string(), emptyCount: z.number().int(), nonNumericCount: z.number().int(), numeric: numericSchema.nullable() })), preview: z.array(z.record(z.string(), z.string())) }),
   async execute(input, ctx) {
     if (path.extname(input.path).toLowerCase() !== '.csv') throw new ToolError('UNSUPPORTED_FORMAT', '请选择 .csv 文件，暂不支持 Excel 工作簿。');
     ctx.reportProgress?.({ phase: '读取 CSV 文件' });
@@ -28,7 +28,7 @@ export const csvSummaryTool = defineTool({
     let headers: string[] | undefined;
     let rowCount = 0;
     const preview: Record<string, string>[] = [];
-    const statistics: Array<{ emptyCount: number; valid: boolean; count: number; min: number; max: number; sum: number }> = [];
+    const statistics: Array<{ emptyCount: number; nonNumericCount: number; count: number; min: number; max: number; sum: number }> = [];
     try {
       for await (const record of parser) {
         ctx.signal.throwIfAborted();
@@ -37,7 +37,7 @@ export const csvSummaryTool = defineTool({
           const normalized = row.map(value => value.trim());
           if (!row.length || normalized.some(value => !value) || new Set(normalized).size !== row.length) throw new ToolError('INVALID_INPUT', 'CSV 表头不能为空或重复。');
           headers = row;
-          for (const _header of headers) statistics.push({ emptyCount: 0, valid: true, count: 0, min: Infinity, max: -Infinity, sum: 0 });
+          for (const _header of headers) statistics.push({ emptyCount: 0, nonNumericCount: 0, count: 0, min: Infinity, max: -Infinity, sum: 0 });
           continue;
         }
         rowCount++;
@@ -49,15 +49,15 @@ export const csvSummaryTool = defineTool({
           const value = raw.trim();
           if (!value) { stat.emptyCount++; return; }
           const number = Number(value);
-          if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value) || !Number.isFinite(number)) { stat.valid = false; return; }
+          if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value) || !Number.isFinite(number)) { stat.nonNumericCount++; return; }
           stat.count++; stat.min = Math.min(stat.min, number); stat.max = Math.max(stat.max, number); stat.sum += number;
         });
       }
       if (!headers) throw new ToolError('INVALID_INPUT', 'CSV 文件缺少表头。');
       const columns = headers.map((name, index) => {
-        const { emptyCount, valid, count, min, max, sum } = statistics[index];
-        if (valid && count && !Number.isFinite(sum)) throw new ToolError('LIMIT_EXCEEDED', '数值合计超出可表示范围。');
-        return { name, emptyCount, numeric: valid && count ? { count, min, max, sum, mean: sum / count } : null };
+        const { emptyCount, nonNumericCount, count, min, max, sum } = statistics[index];
+        if (count && !Number.isFinite(sum)) throw new ToolError('LIMIT_EXCEEDED', '数值合计超出可表示范围。');
+        return { name, emptyCount, nonNumericCount, numeric: count ? { count, min, max, sum, mean: sum / count } : null };
       });
       return { rowCount, columnCount: headers.length, columns, preview };
     } catch (error) {

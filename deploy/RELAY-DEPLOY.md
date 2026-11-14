@@ -1,6 +1,6 @@
 # 在服务器上部署中继服务
 
-服务器是 InstaBox 免费机（4 核、8GB 内存、16GB 系统盘 + 20GB 持久化 `/data`），Debian 13、Firecracker 微虚拟机：它提供虚拟化但不含容器运行时，所以**不要用 Docker**，直接跑 Node 进程 + systemd。下面是完整步骤。
+服务器是 InstaBox 免费机（4 核、8GB 内存、16GB 系统盘 + 20GB 持久化 `/data`），闲置 30 分钟自动暂停，Debian 13、Firecracker 微虚拟机：它提供虚拟化但不含容器运行时，所以**不要用 Docker**，直接跑 Node 进程 + systemd。下面是完整步骤。
 
 ## 1. 准备 Node
 
@@ -16,16 +16,17 @@ node --version
 
 ## 2. 部署中继
 
-中继只依赖 `dist/server/relay/` 与 `zod`，不需要整个工作站。实测最小部署集：`dist/server/relay/` + `node_modules` + 一个 `{"type":"module"}` 的 `package.json`（Node 22 缺省会退化成“按 ESM 重新解析”的警告模式）。
+中继只依赖 `dist/server/relay/` 与 `zod`，不需要整个工作站。最小部署集：`dist/server/relay/` + 服务器上装一个 `zod` + 一个 `{"type":"module"}` 的 `package.json`（Node 22 缺省会退化成“按 ESM 重新解析”的警告模式）。不要整个 `node_modules` 都拷过去——里面有 Electron / sharp / Playwright 这些原生件，又大、跨架构还容易坏。
 
 ```bash
 sudo mkdir -p /opt/henry/relay /data/henry-relay
 sudo useradd --system --home /opt/henry/relay henry
-# 在本地构建后复制产物（本地项目目录执行）
+# 在本地构建后只复制中继产物（本地项目目录执行）
 #   npm run build
-#   scp -r dist/server/relay node_modules <服务器>:/opt/henry/relay/
+#   scp -r dist/server/relay <服务器>:/opt/henry/relay/
 cd /opt/henry/relay
 echo '{"type":"module"}' > package.json
+npm install zod
 sudo chown -R henry:henry /opt/henry/relay
 sudo chown -R henry:henry /data/henry-relay
 ```

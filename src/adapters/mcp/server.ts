@@ -13,7 +13,11 @@ export function createMcpServer(runtime: Runtime) {
     );
     server.registerTool(tool.name, {
       title: tool.title, description: tool.description, inputSchema: tool.inputSchema, outputSchema,
-      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: tool.capabilities.includes('network:public') },
+      annotations: {
+        readOnlyHint: !tool.capabilities.includes('files:write'),
+        destructiveHint: tool.capabilities.includes('files:write'),
+        openWorldHint: tool.capabilities.includes('network:public'),
+      },
     }, async (args, extra) => {
       const result = await runtime.executor.run(tool.name, args, { source: 'mcp', signal: extra.signal });
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], structuredContent: { ...result }, isError: !result.ok };

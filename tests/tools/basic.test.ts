@@ -90,9 +90,9 @@ test('CSV preserves BOM-decoded quoted fields, embedded newlines and original ce
   assert.equal(output.rowCount, 3);
   assert.equal(output.columnCount, 3);
   assert.deepEqual(output.columns, [
-    { name: 'name', emptyCount: 0, numeric: null },
-    { name: 'amount', emptyCount: 1, numeric: { count: 2, min: 7.5, max: 12.5, sum: 20, mean: 10 } },
-    { name: 'note', emptyCount: 2, numeric: null },
+    { name: 'name', emptyCount: 0, nonNumericCount: 3, numeric: null },
+    { name: 'amount', emptyCount: 1, nonNumericCount: 0, numeric: { count: 2, min: 7.5, max: 12.5, sum: 20, mean: 10 } },
+    { name: 'note', emptyCount: 2, nonNumericCount: 1, numeric: null },
   ]);
   assert.deepEqual(output.preview, [
     { name: 'Doe, Jane', amount: '12.5', note: 'said "hi"\r\nnext' },
@@ -106,7 +106,7 @@ test('CSV retains whitespace-only records while skipping empty physical lines', 
   const output = await csvSummaryTool.execute(csvInput, ctx);
   assert.equal(output.rowCount, 3);
   assert.deepEqual(output.columns, [
-    { name: 'value', emptyCount: 2, numeric: { count: 1, min: 7, max: 7, sum: 7, mean: 7 } },
+    { name: 'value', emptyCount: 2, nonNumericCount: 0, numeric: { count: 1, min: 7, max: 7, sum: 7, mean: 7 } },
   ]);
   assert.deepEqual(output.preview, [{ value: '   ' }, { value: '' }, { value: '7' }]);
 });
@@ -127,8 +127,8 @@ test('CSV supports header-only files with no numeric summary', async (t) => {
     rowCount: 0,
     columnCount: 2,
     columns: [
-      { name: ' first ', emptyCount: 0, numeric: null },
-      { name: 'second', emptyCount: 0, numeric: null },
+      { name: ' first ', emptyCount: 0, nonNumericCount: 0, numeric: null },
+      { name: 'second', emptyCount: 0, nonNumericCount: 0, numeric: null },
     ],
     preview: [],
   });
@@ -153,20 +153,28 @@ test('CSV rejects malformed quoting and inconsistent column counts without leaki
   }
 });
 
-test('CSV treats a column as numeric only when all nonempty cells are finite plain decimals', async (t) => {
+test('CSV statistics use only the numeric cells of a column and count the non-numeric ones', async (t) => {
   const ctx = await csvFixture(t, 'decimal,exponent,currency,percent,date,hex,thousands,empty\n-2,1e3,$1,10%,2026-11-02,0x10,"1,000",\n+.5,2,3,4,5,6,7, \n1.,,,,,,,\n');
   const output = await csvSummaryTool.execute(csvInput, ctx);
-  assert.deepEqual(output.columns[0], {
-    name: 'decimal', emptyCount: 0,
-    numeric: { count: 3, min: -2, max: 1, sum: -0.5, mean: -0.5 / 3 },
-  });
-  assert.deepEqual(output.columns.slice(1).map((column) => column.numeric), [null, null, null, null, null, null, null]);
-  assert.equal(output.columns[7].emptyCount, 3);
+  assert.deepEqual(output.columns, [
+    { name: 'decimal', emptyCount: 0, nonNumericCount: 0, numeric: { count: 3, min: -2, max: 1, sum: -0.5, mean: -0.5 / 3 } },
+    { name: 'exponent', emptyCount: 1, nonNumericCount: 1, numeric: { count: 1, min: 2, max: 2, sum: 2, mean: 2 } },
+    { name: 'currency', emptyCount: 1, nonNumericCount: 1, numeric: { count: 1, min: 3, max: 3, sum: 3, mean: 3 } },
+    { name: 'percent', emptyCount: 1, nonNumericCount: 1, numeric: { count: 1, min: 4, max: 4, sum: 4, mean: 4 } },
+    { name: 'date', emptyCount: 1, nonNumericCount: 1, numeric: { count: 1, min: 5, max: 5, sum: 5, mean: 5 } },
+    { name: 'hex', emptyCount: 1, nonNumericCount: 1, numeric: { count: 1, min: 6, max: 6, sum: 6, mean: 6 } },
+    { name: 'thousands', emptyCount: 1, nonNumericCount: 1, numeric: { count: 1, min: 7, max: 7, sum: 7, mean: 7 } },
+    { name: 'empty', emptyCount: 3, nonNumericCount: 0, numeric: null },
+  ]);
 });
 
 test('CSV rejects nonfinite decimal values as numeric candidates', async (t) => {
   const ctx = await csvFixture(t, `value\n${'9'.repeat(400)}\n2\n`);
-  assert.equal((await csvSummaryTool.execute(csvInput, ctx)).columns[0].numeric, null);
+  const output = await csvSummaryTool.execute(csvInput, ctx);
+  assert.deepEqual(output.columns[0], {
+    name: 'value', emptyCount: 0, nonNumericCount: 1,
+    numeric: { count: 1, min: 2, max: 2, sum: 2, mean: 2 },
+  });
 });
 
 test('CSV rejects numeric sum overflow', async (t) => {

@@ -30,6 +30,8 @@ const startTaskSchema = z.strictObject({
   deviceId: z.string().min(1),
   tool: z.string().min(1),
   input: z.unknown(),
+  /** Idempotency key: resending the same key returns the original task instead of running it twice. */
+  requestId: z.string().min(1).max(200).optional(),
 });
 
 /**
@@ -96,22 +98,36 @@ export class RelayServer {
       if (url.pathname === '/relay/tasks' && request.method === 'POST') {
         const parsed = startTaskSchema.safeParse(await this.readBody(request));
         if (!parsed.success) { this.json(response, 400, { error: '任务参数无效。' }); return; }
+        // Tasks that waited out the TTL are failed first, so a stale task
+        // never blocks a fresh attempt under the same idempotency key.
+        this.store.expireQueuedTasks(parsed.data.deviceId);
+        if (parsed.data.requestId) {
+          const existing = this.store.taskByRequestId(parsed.data.deviceId, parsed.data.requestId);
+          if (existing) { this.json(response, 202, { taskId: existing.id, status: existing.status, duplicate: true }); return; }
+        }
         const node = this.nodes.get(parsed.data.deviceId);
         if (!node) { this.json(response, 409, { error: '目标设备当前不在线。' }); return; }
         const taskId = randomUUID();
-        this.store.addTask({ id: taskId, deviceId: parsed.data.deviceId, tool: parsed.data.tool, input: JSON.stringify(parsed.data.input), status: 'queued', result: null, error: null, runId: null, createdAt: Date.now(), updatedAt: Date.now() });
+        this.store.addTask({ id: taskId, deviceId: parsed.data.deviceId, tool: parsed.data.tool, input: JSON.stringify(parsed.data.input), status: 'queued', result: null, error: null, runId: null, requestId: parsed.data.requestId ?? null, createdAt: Date.now(), updatedAt: Date.now() });
         const waiter = this.waiters.get(parsed.data.deviceId);
         if (waiter) {
           clearTimeout(waiter.timer);
           this.waiters.delete(parsed.data.deviceId);
+          // The task is handed to the node right away, so it is claimed
+          // here instead of staying queued for the next poll to find.
+          this.store.updateTask(taskId, { status: 'running' });
           waiter.resolve({ id: taskId, tool: parsed.data.tool, input: parsed.data.input });
+          this.json(response, 202, { taskId, status: 'running' });
+          return;
         }
         this.json(response, 202, { taskId, status: 'queued' });
         return;
       }
 
       if (url.pathname === '/relay/tasks' && request.method === 'GET') {
-        this.json(response, 200, { tasks: this.store.tasks(url.searchParams.get('deviceId') ?? undefined) });
+        const deviceId = url.searchParams.get('deviceId') ?? undefined;
+        this.store.expireQueuedTasks(deviceId);
+        this.json(response, 200, { tasks: this.store.tasks(deviceId) });
         return;
       }
 
@@ -158,12 +174,33 @@ export class RelayServer {
     if (typeof deviceId !== 'string') { this.json(response, 401, { error: '缺少节点标识。' }); return; }
     const node = this.nodes.get(deviceId);
     if (!node) { this.json(response, 409, { error: '节点尚未注册。' }); return; }
+    // A task that was queued while the node was away — between polls, or
+    // while it was offline and restarted — is handed out first, before the
+    // poll waits for a new one. Expired tasks never reach the node.
+    this.store.expireQueuedTasks(deviceId);
+    const queued = this.store.claimQueuedTask(deviceId);
+    if (queued) { this.json(response, 200, { task: this.taskPayload(queued) }); return; }
     const task = await new Promise<{ id: string; tool: string; input: unknown } | null>(resolve => {
       const timer = setTimeout(() => { this.waiters.delete(deviceId); resolve(null); }, 25_000);
       this.waiters.set(deviceId, { resolve, timer });
       node.resolveTask = resolve;
+      // A task may have been queued between the claim above and this waiter
+      // being registered; pick it up instead of waiting out the long poll.
+      const late = this.store.claimQueuedTask(deviceId);
+      if (late) {
+        clearTimeout(timer);
+        this.waiters.delete(deviceId);
+        resolve(this.taskPayload(late));
+      }
     });
     this.json(response, 200, { task });
+  }
+
+  /** The task as the node expects it: the stored input parsed back to a value. */
+  private taskPayload(row: { id: string; tool: string; input: string }): { id: string; tool: string; input: unknown } {
+    let input: unknown = row.input;
+    try { input = JSON.parse(row.input); } catch { /* the stored input was never JSON; pass it through */ }
+    return { id: row.id, tool: row.tool, input };
   }
 
   private async handleNodeEvents(request: IncomingMessage, response: ServerResponse): Promise<void> {

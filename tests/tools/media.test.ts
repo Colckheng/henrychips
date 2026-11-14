@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -9,7 +9,8 @@ import mammoth from 'mammoth';
 import { z } from 'zod';
 import type { PublicHttp, ToolContext } from '../../src/contracts/tool.js';
 import { bilibiliVideoTool } from '../../src/tools/bilibili-video.js';
-import { awemeIdFrom, isShortLink, selectDouyinSource } from '../../src/tools/douyin-core.js';
+import { awemeIdFrom, fetchDouyinVideo, isShortLink, selectDouyinSource } from '../../src/tools/douyin-core.js';
+import { requestDetail, writeSession } from '../../src/core/douyin-session.js';
 import { douyinNoWatermarkTool } from '../../src/tools/douyin-nowatermark.js';
 import { douyinVideoTool } from '../../src/tools/douyin-video.js';
 import { docConvertTool } from '../../src/tools/doc-convert.js';
@@ -115,7 +116,7 @@ test('Bilibili extraction reads the video metadata and stream from the API', asy
       return { finalUrl: url, status: 200, data: { code: 0, data: { quality: 64, timelength: 126000, durl: [{ url: 'https://cdn/video.mp4', size: 1024 }] } } };
     },
   });
-  const result = await bilibiliVideoTool.execute({ url: 'https://www.bilibili.com/video/BV1ugxq6HEfH', download: false, parts: 'video', watermark: 'keep' }, context({ http }));
+  const result = await bilibiliVideoTool.execute({ url: 'https://www.bilibili.com/video/BV1ugxq6HEfH', download: false, parts: 'video', watermark: 'keep', page: 1 }, context({ http }));
   assert.equal(result.bvid, 'BV1ugxq6HEfH');
   assert.equal(result.title, '示例标题');
   assert.equal(result.owner, '作者');
@@ -125,7 +126,7 @@ test('Bilibili extraction reads the video metadata and stream from the API', asy
 
 test('Bilibili extraction rejects identifiers that are not video numbers', async () => {
   await assert.rejects(
-    bilibiliVideoTool.execute({ url: 'not-a-video', download: false, parts: 'video', watermark: 'keep' }, context({ http: fakeHttp() })),
+    bilibiliVideoTool.execute({ url: 'not-a-video', download: false, parts: 'video', watermark: 'keep', page: 1 }, context({ http: fakeHttp() })),
     /BV 号/,
   );
 });
@@ -143,7 +144,7 @@ test('Bilibili audio separation exposes the DASH audio stream and saves it besid
     getBinary: async (url) => ({ finalUrl: url, status: 200, contentType: 'video/mp4', bytes: new Uint8Array([1, 2, 3]) }),
   });
   const writer = createFileWriter(directory, new AbortController().signal, limits.outputBytes);
-  const result = await bilibiliVideoTool.execute({ url: 'BV1ugxq6HEfH', download: true, parts: 'both', watermark: 'keep' }, context({ http, output: writer }));
+  const result = await bilibiliVideoTool.execute({ url: 'BV1ugxq6HEfH', download: true, parts: 'both', watermark: 'keep', page: 1 }, context({ http, output: writer }));
   assert.equal(result.audioUrl, 'https://cdn:8082/audio.m4s');
   assert.equal(result.savedFile?.relativePath, 'BV1ugxq6HEfH.mp4');
   assert.equal(result.savedAudioFile?.relativePath, 'BV1ugxq6HEfH-audio.m4a');
@@ -280,7 +281,7 @@ test('the Bilibili watermark switch prefers the original DASH stream', async () 
       return { finalUrl: url, status: 200, data: { code: 0, data: { dash: { duration: 126, video: [{ id: 80, codecs: 'avc1', bandwidth: 900, baseUrl: 'https://cdn/original.m4s' }], audio: [{ id: 30232, codecs: 'mp4a', bandwidth: 5, baseUrl: 'https://cdn/audio.m4s' }] } } } };
     },
   });
-  const result = await bilibiliVideoTool.execute({ url: 'BV1ugxq6HEfH', download: false, parts: 'video', watermark: 'remove' }, context({ http }));
+  const result = await bilibiliVideoTool.execute({ url: 'BV1ugxq6HEfH', download: false, parts: 'video', watermark: 'remove', page: 1 }, context({ http }));
   assert.equal(result.source, 'original-dash');
   assert.ok(result.streams.some(stream => stream.url === 'https://cdn/original.m4s'));
   assert.ok(result.warnings.some(warning => warning.includes('接口不提供')));
@@ -297,4 +298,207 @@ test('the output writer refuses to follow a link out of the output directory', a
   await assert.rejects(writer.write('escape/pwned.txt', new Uint8Array([1])), /输出目录/);
   const escaped = path.join(outside, 'pwned.txt');
   assert.equal(existsSync(escaped), false);
+});
+
+function douyinSessionPath(directory: string): string {
+  return path.join(directory, 'douyin-session.json');
+}
+
+async function seedDouyinSession(directory: string): Promise<void> {
+  await writeFile(douyinSessionPath(directory), JSON.stringify({ capturedAt: Date.now(), cookies: {}, template: {}, verifyFp: '', uifid: '' }));
+}
+
+function douyinDetail(play: string[], marked: string[]): Record<string, unknown> {
+  return {
+    aweme_id: '7699524083810599545', desc: '测试作品',
+    author: { nickname: '作者', sec_uid: 'sec' },
+    video: { duration: 5000, play_addr: { url_list: play }, download_addr: { url_list: marked }, cover: { url_list: [] }, dynamic_cover: { url_list: [] } },
+    music: { play_url: { url_list: [] }, title: '', duration: 0 },
+    create_time: 1700000000,
+  };
+}
+
+function douyinDetailHttp(detail: Record<string, unknown>): PublicHttp {
+  return fakeHttp({ getJson: async () => ({ finalUrl: 'https://www.douyin.com/', status: 200, data: { status_code: 0, aweme_detail: detail } }) });
+}
+
+const douyinVideoBase = {
+  awemeId: '1', description: '', author: '', authorId: '', durationMs: 1, cover: '',
+  playUrls: ['https://cdn/clean.mp4'], watermarkUrls: ['https://cdn/marked.mp4'],
+  imageUrls: [], audioUrls: [], audioTitle: '', audioDurationMs: 0, createdAt: null,
+};
+
+test('the Douyin source label follows the address actually returned on fallback', () => {
+  const fallback = selectDouyinSource({ ...douyinVideoBase, playUrls: [], watermarkUrls: ['https://cdn/marked.mp4'] }, 'remove');
+  assert.equal(fallback.source, 'watermarked');
+  assert.equal(fallback.url, 'https://cdn/marked.mp4');
+  const mirror = selectDouyinSource({ ...douyinVideoBase, playUrls: ['https://cdn/clean.mp4'], watermarkUrls: [] }, 'keep');
+  assert.equal(mirror.source, 'no-watermark');
+  assert.equal(mirror.url, 'https://cdn/clean.mp4');
+});
+
+test('douyin_nowatermark warns when only a watermarked address came back', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'workstation-douyin-fallback-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await seedDouyinSession(directory);
+  const http = douyinDetailHttp(douyinDetail([], ['https://cdn/marked.mp4']));
+  const result = await douyinNoWatermarkTool.execute(
+    { url: '7699524083810599545', download: false, parts: 'video', watermark: 'remove' },
+    context({ http, stateDirectory: directory }),
+  );
+  assert.equal(result.source, 'watermarked');
+  assert.equal(result.noWatermarkUrl, 'https://cdn/marked.mp4');
+  assert.ok(result.warnings.some(warning => warning.includes('只返回了带水印地址')));
+  assert.ok(!result.warnings.some(warning => warning.includes('当前保留水印')));
+});
+
+test('douyin_video warns when a keep-watermark request only got a clean address', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'workstation-douyin-mirror-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await seedDouyinSession(directory);
+  const http = douyinDetailHttp(douyinDetail(['https://cdn/clean.mp4'], []));
+  const result = await douyinVideoTool.execute(
+    { url: '7699524083810599545', download: false, parts: 'video', watermark: 'keep' },
+    context({ http, stateDirectory: directory }),
+  );
+  assert.equal(result.source, 'no-watermark');
+  assert.ok(result.warnings.some(warning => warning.includes('只返回了无水印地址')));
+});
+
+test('Bilibili extraction can select a later part by page', async () => {
+  const requested: string[] = [];
+  const http = fakeHttp({
+    getRaw: async () => ({ finalUrl: 'https://api.bilibili.com/x/frontend/finger/spi', status: 200, contentType: 'application/json', bytes: new Uint8Array(), setCookie: ['buvid3=abc; Path=/'], headers: {} }),
+    getJson: async (url) => {
+      requested.push(url);
+      if (url.includes('/view')) return { finalUrl: url, status: 200, data: { code: 0, data: { bvid: 'BV1ugxq6HEfH', title: '示例', duration: 300, owner: { name: '作者' }, pic: 'https://cover', pages: [{ cid: 42, page: 1, part: '上' }, { cid: 77, page: 2, part: '下' }] } } };
+      return { finalUrl: url, status: 200, data: { code: 0, data: { quality: 64, timelength: 150000, durl: [{ url: 'https://cdn/part2.mp4', size: 10 }] } } };
+    },
+  });
+  const result = await bilibiliVideoTool.execute({ url: 'BV1ugxq6HEfH', download: false, parts: 'video', watermark: 'keep', page: 2 }, context({ http }));
+  assert.ok(requested.some(url => url.includes('cid=77')));
+  assert.ok(!requested.some(url => url.includes('cid=42')));
+  assert.equal(result.page, 2);
+  assert.equal(result.part, '下');
+  assert.equal(result.pageCount, 2);
+  assert.equal(result.streams[0].url, 'https://cdn/part2.mp4');
+});
+
+test('Bilibili extraction rejects a page beyond the part count', async () => {
+  const http = fakeHttp({
+    getRaw: async () => ({ finalUrl: 'https://api.bilibili.com/x/frontend/finger/spi', status: 200, contentType: 'application/json', bytes: new Uint8Array(), setCookie: ['buvid3=abc; Path=/'], headers: {} }),
+    getJson: async (url) => {
+      if (url.includes('/view')) return { finalUrl: url, status: 200, data: { code: 0, data: { bvid: 'BV1ugxq6HEfH', title: '示例', duration: 126, owner: { name: '作者' }, pic: 'https://cover', pages: [{ cid: 42, page: 1 }] } } };
+      return { finalUrl: url, status: 200, data: { code: 0, data: {} } };
+    },
+  });
+  await assert.rejects(
+    bilibiliVideoTool.execute({ url: 'BV1ugxq6HEfH', download: false, parts: 'video', watermark: 'keep', page: 2 }, context({ http })),
+    /第 2 分 P 超出范围，该稿件共 1 分 P/,
+  );
+});
+
+test('Bilibili audio-only with the watermark kept skips the MP4 request', async () => {
+  const requested: string[] = [];
+  const http = fakeHttp({
+    getRaw: async () => ({ finalUrl: 'https://api.bilibili.com/x/frontend/finger/spi', status: 200, contentType: 'application/json', bytes: new Uint8Array(), setCookie: ['buvid3=abc; Path=/'], headers: {} }),
+    getJson: async (url) => {
+      requested.push(url);
+      if (url.includes('/view')) return { finalUrl: url, status: 200, data: { code: 0, data: { bvid: 'BV1ugxq6HEfH', title: '示例', duration: 126, owner: { name: '作者' }, pic: 'https://cover', pages: [{ cid: 42, page: 1 }] } } };
+      // Would throw if the MP4 branch ran: no durl is returned here.
+      if (url.includes('fnval=0')) return { finalUrl: url, status: 200, data: { code: 0, data: { quality: 64, timelength: 126000, durl: [] } } };
+      return { finalUrl: url, status: 200, data: { code: 0, data: { dash: { duration: 126, video: [{ id: 32, codecs: 'avc1', bandwidth: 1, baseUrl: 'https://cdn/video.m4s' }], audio: [{ id: 30232, codecs: 'mp4a', bandwidth: 5, baseUrl: 'https://cdn/audio.m4s' }] } } } };
+    },
+  });
+  const result = await bilibiliVideoTool.execute({ url: 'BV1ugxq6HEfH', download: false, parts: 'audio', watermark: 'keep', page: 1 }, context({ http }));
+  assert.ok(!requested.some(url => url.includes('fnval=0')));
+  assert.equal(result.audioUrl, 'https://cdn/audio.m4s');
+});
+
+test('Bilibili watermark removal skips the MP4 request for video and audio', async () => {
+  const requested: string[] = [];
+  const http = fakeHttp({
+    getRaw: async () => ({ finalUrl: 'https://api.bilibili.com/x/frontend/finger/spi', status: 200, contentType: 'application/json', bytes: new Uint8Array(), setCookie: ['buvid3=abc; Path=/'], headers: {} }),
+    getJson: async (url) => {
+      requested.push(url);
+      if (url.includes('/view')) return { finalUrl: url, status: 200, data: { code: 0, data: { bvid: 'BV1ugxq6HEfH', title: '示例', duration: 126, owner: { name: '作者' }, pic: 'https://cover', pages: [{ cid: 42, page: 1 }] } } };
+      if (url.includes('fnval=0')) return { finalUrl: url, status: 200, data: { code: -412, message: '请求过于频繁' } };
+      return { finalUrl: url, status: 200, data: { code: 0, data: { dash: { duration: 126, video: [{ id: 80, codecs: 'avc1', bandwidth: 900, baseUrl: 'https://cdn/original.m4s' }], audio: [{ id: 30232, codecs: 'mp4a', bandwidth: 5, baseUrl: 'https://cdn/audio.m4s' }] } } } };
+    },
+  });
+  const result = await bilibiliVideoTool.execute({ url: 'BV1ugxq6HEfH', download: false, parts: 'both', watermark: 'remove', page: 1 }, context({ http }));
+  assert.ok(!requested.some(url => url.includes('fnval=0')));
+  assert.equal(result.source, 'original-dash');
+});
+
+test('Bilibili view errors carry the platform code and its own message', async () => {
+  const cases: Array<{ code: number; message: string; pattern: RegExp }> = [
+    { code: -412, message: '请求过于频繁', pattern: /-412.*请求过于频繁|请求过于频繁.*-412/s },
+    { code: -404, message: '啥都木有', pattern: /-404.*啥都木有/s },
+    { code: 62002, message: '稿件不可见', pattern: /62002.*稿件不可见/s },
+    { code: 12345, message: '未知错误', pattern: /12345.*未知错误/s },
+  ];
+  for (const { code, message, pattern } of cases) {
+    const http = fakeHttp({
+      getRaw: async () => ({ finalUrl: 'https://api.bilibili.com/x/frontend/finger/spi', status: 200, contentType: 'application/json', bytes: new Uint8Array(), setCookie: [], headers: {} }),
+      getJson: async (url) => ({ finalUrl: url, status: 200, data: { code, message } }),
+    });
+    await assert.rejects(
+      bilibiliVideoTool.execute({ url: 'BV1ugxq6HEfH', download: false, parts: 'video', watermark: 'keep', page: 1 }, context({ http })),
+      pattern,
+    );
+  }
+});
+
+test('Bilibili playurl errors carry the platform code and its own message', async () => {
+  const http = fakeHttp({
+    getRaw: async () => ({ finalUrl: 'https://api.bilibili.com/x/frontend/finger/spi', status: 200, contentType: 'application/json', bytes: new Uint8Array(), setCookie: ['buvid3=abc; Path=/'], headers: {} }),
+    getJson: async (url) => {
+      if (url.includes('/view')) return { finalUrl: url, status: 200, data: { code: 0, data: { bvid: 'BV1ugxq6HEfH', title: '示例', duration: 126, owner: { name: '作者' }, pic: 'https://cover', pages: [{ cid: 42, page: 1 }] } } };
+      return { finalUrl: url, status: 200, data: { code: -412, message: '请求过于频繁' } };
+    },
+  });
+  await assert.rejects(
+    bilibiliVideoTool.execute({ url: 'BV1ugxq6HEfH', download: false, parts: 'video', watermark: 'keep', page: 1 }, context({ http })),
+    /-412.*请求过于频繁/s,
+  );
+});
+
+test('requestDetail surfaces an explicit platform error and no error for an empty result', async () => {
+  const session = { capturedAt: Date.now(), cookies: {}, template: {}, verifyFp: '', uifid: '' };
+  const errorHttp = fakeHttp({ getJson: async () => ({ finalUrl: 'https://www.douyin.com/', status: 200, data: { status_code: 1002, status_msg: '作品不存在' } }) });
+  const refused = await requestDetail(session, '7699524083810599545', errorHttp, context({ http: errorHttp }));
+  assert.equal(refused.ok, false);
+  assert.equal(refused.platformError?.code, 1002);
+  assert.equal(refused.platformError?.message, '作品不存在');
+  const emptyHttp = fakeHttp({ getJson: async () => ({ finalUrl: 'https://www.douyin.com/', status: 200, data: {} }) });
+  const empty = await requestDetail(session, '7699524083810599545', emptyHttp, context({ http: emptyHttp }));
+  assert.equal(empty.ok, false);
+  assert.equal(empty.platformError, undefined);
+});
+
+test('fetchDouyinVideo reports an explicit platform error without a browser retry', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'workstation-douyin-platform-error-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await seedDouyinSession(directory);
+  const http = fakeHttp({ getJson: async () => ({ finalUrl: 'https://www.douyin.com/', status: 200, data: { status_code: 1002, status_msg: '作品不存在' } }) });
+  // If this retried through the browser, the failure would be the generic
+  // "cannot establish a browser session" error instead of the platform words.
+  await assert.rejects(
+    fetchDouyinVideo('7699524083810599545', context({ http, stateDirectory: directory })),
+    /1002.*作品不存在/s,
+  );
+});
+
+test('the Douyin session file is written atomically and keeps its permissions', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'workstation-douyin-session-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const session = { capturedAt: Date.now(), cookies: { sid: 'abc' }, template: {}, verifyFp: '', uifid: '' };
+  await writeSession(directory, session);
+  assert.deepEqual(JSON.parse(await readFile(douyinSessionPath(directory), 'utf8')), session);
+  assert.equal((await stat(douyinSessionPath(directory))).mode & 0o777, 0o600);
+  await Promise.all(Array.from({ length: 10 }, (_, index) => writeSession(directory, { ...session, capturedAt: Date.now() + index })));
+  const parsed = JSON.parse(await readFile(douyinSessionPath(directory), 'utf8')) as { capturedAt: number };
+  assert.equal(typeof parsed.capturedAt, 'number');
+  assert.deepEqual(await readdir(directory), ['douyin-session.json']);
 });

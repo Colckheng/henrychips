@@ -11,7 +11,12 @@ port="4318"
 while [ $# -gt 0 ]; do
   case "$1" in
     --dev) mode="development"; shift ;;
-    --port) port="$2"; shift 2 ;;
+    --port)
+      case "${2:-}" in
+        ''|*[!0-9]*) echo "--port 必须是 1 到 65535 之间的整数。" >&2; exit 2 ;;
+      esac
+      if [ "$2" -lt 1 ] || [ "$2" -gt 65535 ]; then echo "--port 必须是 1 到 65535 之间的整数。" >&2; exit 2; fi
+      port="$2"; shift 2 ;;
     *) echo "未知参数：$1" >&2; exit 2 ;;
   esac
 done
@@ -30,11 +35,15 @@ port_file="$root/.workstation/port"
 mkdir -p "$(dirname "$port_file")"
 
 if [ "$mode" = "development" ]; then
+  if [ "$port" != "4318" ]; then
+    echo "开发模式忽略 --port，使用 API 端口 4318。" >&2
+    port="4318"
+  fi
   echo "开发模式：前端 5173，API 4318" >&2
   npm run dev &
   launcher_pid=$!
 else
-  node dist/server/adapters/http/server.js &
+  node dist/server/adapters/http/server.js --port "$port" &
   launcher_pid=$!
 fi
 

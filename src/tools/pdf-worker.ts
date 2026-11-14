@@ -32,7 +32,7 @@ async function extract(input: PdfWorkerInput, report?: (page: number, total: num
     useWorkerFetch: false, useWasm: false, enableXfa: false,
     disableAutoFetch: true, disableRange: true, disableStream: true,
     isOffscreenCanvasSupported: false, isImageDecoderSupported: false,
-    BinaryDataFactory: NoExternalAssets, stopAtErrors: true,
+    BinaryDataFactory: NoExternalAssets, stopAtErrors: false,
   });
   try {
     const document = await loading.promise;
@@ -46,34 +46,45 @@ async function extract(input: PdfWorkerInput, report?: (page: number, total: num
     const result: PdfExtraction = { totalPages: document.numPages, pages: [], textCharacters: 0, truncated: false, warnings: [] };
     const characterLimit = 100_000;
     for (let pageNumber = input.startPage; pageNumber <= endPage; pageNumber++) {
-      const page = await document.getPage(pageNumber);
-      const reader = page.streamTextContent().getReader();
       let text = '';
-      let separator = '';
-      const remaining = characterLimit - result.textCharacters;
+      let failed = false;
       try {
-        while (!result.truncated) {
-          const chunk = await reader.read();
-          if (chunk.done) break;
-          for (const item of chunk.value.items) {
-            if (!('str' in item)) continue;
-            const value = item.str.replace(/\s+/g, ' ').trim();
-            if (value) {
-              const addition = (text ? separator : '') + value;
-              const available = remaining - text.length;
-              text += addition.slice(0, available);
-              if (addition.length > available) { result.truncated = true; break; }
-              separator = ' ';
+        const page = await document.getPage(pageNumber);
+        const reader = page.streamTextContent().getReader();
+        let separator = '';
+        const remaining = characterLimit - result.textCharacters;
+        try {
+          while (!result.truncated) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            for (const item of chunk.value.items) {
+              if (!('str' in item)) continue;
+              const value = item.str.replace(/\s+/g, ' ').trim();
+              if (value) {
+                const addition = (text ? separator : '') + value;
+                const available = remaining - text.length;
+                text += addition.slice(0, available);
+                if (addition.length > available) { result.truncated = true; break; }
+                separator = ' ';
+              }
+              if (item.hasEOL) separator = '\n';
             }
-            if (item.hasEOL) separator = '\n';
           }
+        } finally {
+          await reader.cancel(new Error('Text extraction complete.'));
+          reader.releaseLock();
+          page.cleanup();
         }
-      } finally {
-        await reader.cancel(new Error('Text extraction complete.'));
-        reader.releaseLock();
-        page.cleanup();
+        text = text.trim();
+      } catch {
+        // One bad page must not fail the whole extraction: skip it and note it.
+        failed = true;
       }
-      text = text.trim();
+      if (failed) {
+        result.warnings.push(`第 ${pageNumber} 页提取失败，已跳过。`);
+        report?.(pageNumber - input.startPage + 1, endPage - input.startPage + 1);
+        continue;
+      }
       result.pages.push({ page: pageNumber, text });
       result.textCharacters += text.length;
       report?.(pageNumber - input.startPage + 1, endPage - input.startPage + 1);

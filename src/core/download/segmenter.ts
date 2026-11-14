@@ -83,7 +83,11 @@ export async function downloadSegmented(link: NetdiskLink, options: SegmenterOpt
   // The announced size is only a guess, so the server is asked how many bytes
   // it really has before the file is split.
   const probed = useRange ? await probeRealSize(link, options.http, options.signal).catch(() => null) : null;
-  const total = probed ?? announced;
+  // The announced size is only a guess until the file is actually read, so
+  // the total may still shrink below this when the last segment ends early.
+  let total = probed ?? announced;
+  /** The length the file was preallocated to; anything past the real end is zero bytes. */
+  const preallocated = total;
   // A server that cannot answer the question about its own size may still
   // serve ranges perfectly, so the download stays segmented with the
   // announced size and the last segment may end earlier than announced.
@@ -151,8 +155,15 @@ export async function downloadSegmented(link: NetdiskLink, options: SegmenterOpt
     const outcomes = await Promise.allSettled(table.segments.map(segment => runSegment(segment)));
     const failure = outcomes.find(outcome => outcome.status === 'rejected');
     if (failure) throw firstFailure ?? failure.reason;
+    // The bytes that really arrived are the lengths of the segments, not the
+    // size the platform announced. When the last segment ended early the
+    // file was preallocated to the announced size, so the zero bytes past
+    // the real end are cut off here — otherwise the file on disk would be
+    // longer than the download that produced it.
+    const actualTotal = bytesWritten();
+    if (actualTotal < preallocated) await handle.truncate(actualTotal);
     report(true);
-    return { bytesWritten: total, totalBytes: total, rangeSupported: segmented, table };
+    return { bytesWritten: actualTotal, totalBytes: actualTotal, rangeSupported: segmented, table };
   } finally {
     await handle.close();
   }
@@ -264,6 +275,11 @@ export async function downloadSegmented(link: NetdiskLink, options: SegmenterOpt
       if (isLast && !sizeIsExact && count > 0) {
         segment.end = segment.start + count - 1;
         segment.done = true;
+        // The file really ends here, so the announced size is wrong from
+        // this point on: the table, the progress total and the result all
+        // use the real length, not the announced one.
+        table.size = segment.end + 1;
+        total = table.size;
         await options.onSegmentComplete?.(table);
         return;
       }

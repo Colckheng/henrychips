@@ -29,10 +29,31 @@ export function parseSegmentTable(text: string): SegmentTable | null {
     const parsed = JSON.parse(text) as unknown;
     if (!parsed || typeof parsed !== 'object') return null;
     const table = parsed as SegmentTable;
-    if (!Number.isSafeInteger(table.size) || !Array.isArray(table.segments)) return null;
+    if (!Number.isSafeInteger(table.size) || table.size < 0 || !Array.isArray(table.segments)) return null;
     if (!table.segments.every(segment => Number.isSafeInteger(segment.start) && Number.isSafeInteger(segment.end) && segment.end >= segment.start)) return null;
-    return table;
+    if (!isContiguous(table)) return null;
+    // The segments are stored in order, so a table that survived is always
+    // read back the same way it was written.
+    const sorted = [...table.segments].sort((a, b) => a.start - b.start);
+    return { size: table.size, segments: sorted };
   } catch { return null; }
+}
+
+/**
+ * The segments must cover the file from 0 to size - 1 with no gap and no
+ * overlap, otherwise the table cannot be trusted as a breakpoint: a gap
+ * would resume into a file with holes in it, an overlap would fetch bytes
+ * twice into the wrong offsets. A table that fails this is treated as no
+ * table at all, so the download starts again from zero.
+ */
+function isContiguous(table: SegmentTable): boolean {
+  if (table.segments.length === 0) return table.size === 0;
+  const sorted = [...table.segments].sort((a, b) => a.start - b.start);
+  if (sorted[0]!.start !== 0) return false;
+  for (let index = 1; index < sorted.length; index++) {
+    if (sorted[index]!.start !== sorted[index - 1]!.end + 1) return false;
+  }
+  return sorted[sorted.length - 1]!.end === table.size - 1;
 }
 
 export function completedBytes(table: SegmentTable): number {

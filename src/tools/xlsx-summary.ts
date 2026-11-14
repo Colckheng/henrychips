@@ -122,7 +122,8 @@ export const xlsxSummaryTool = defineTool({
         const row = rows[rowIndex] ?? [];
         for (let columnIndex = 0; columnIndex < columnCount; columnIndex++) {
           const value = row[columnIndex];
-          kinds[columnIndex].add(kindOf(value));
+          const kind = kindOf(value);
+          if (kind !== 'empty') kinds[columnIndex].add(kind);
           const text = textOf(value);
           if (text === '') { columns[columnIndex].empty++; continue; }
           columns[columnIndex].filled++;
@@ -136,7 +137,7 @@ export const xlsxSummaryTool = defineTool({
       for (let columnIndex = 0; columnIndex < columns.length; columnIndex++) {
         const column = columns[columnIndex];
         const kindsHere = kinds[columnIndex];
-        column.kind = kindsHere.size === 1 ? [...kindsHere][0] : 'mixed';
+        column.kind = kindsHere.size === 0 ? 'empty' : kindsHere.size === 1 ? [...kindsHere][0] : 'mixed';
         const top = [...counters[columnIndex].entries()].sort((left, right) => right[1] - left[1]).slice(0, 3);
         column.topValues = top.map(([value, count]) => ({ value: value.length > 40 ? `${value.slice(0, 40)}…` : value, count }));
         const values = numericValues[columnIndex];
@@ -148,7 +149,7 @@ export const xlsxSummaryTool = defineTool({
 
       summary.push({
         name: worksheet.sheet,
-        rowCount: rows.length,
+        rowCount: dataRows,
         columnCount,
         headers,
         analyzedRows,

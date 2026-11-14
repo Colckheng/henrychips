@@ -69,8 +69,17 @@ export const webExtractTool = defineTool({
     const title = clean(document.querySelector('title')?.textContent ?? '').slice(0, 1000);
     const description = clean(document.querySelector('meta[name="description" i]')?.getAttribute('content') ?? '').slice(0, 2000);
     for (const element of document.querySelectorAll('script, style, noscript, template, nav, header, footer, aside, form, iframe, object, embed, svg, canvas, [hidden], [aria-hidden="true"], [role="navigation"], [role="banner"], [role="contentinfo"]')) element.remove();
-    const root = document.querySelector('article') ?? document.querySelector('main') ?? document.body;
-    const { text, truncated } = extractText(root, ctx.signal);
+    // Try article, then main, then body: an empty article must not hide a
+    // body that actually has text.
+    let text = '';
+    let truncated = false;
+    for (const candidate of [document.querySelector('article'), document.querySelector('main'), document.body]) {
+      if (!candidate) continue;
+      const extracted = extractText(candidate, ctx.signal);
+      text = extracted.text;
+      truncated = extracted.truncated;
+      if (text) break;
+    }
     if (!text) throw new ToolError('UNSUPPORTED_FORMAT', '网页没有可提取的正文，可能需要 JavaScript 或登录才能查看。');
     return { requestedUrl: url, finalUrl: response.finalUrl, title, description, text, characters: text.length, truncated, fetchedAt: new Date().toISOString(), untrustedContent: true as const };
   },

@@ -83,7 +83,10 @@ function normalize(detail: Record<string, unknown>): DouyinVideo {
 export function selectDouyinSource(video: DouyinVideo, watermark: 'remove' | 'keep'): { url: string; source: 'no-watermark' | 'watermarked' } {
   const clean = video.playUrls[0] ?? null;
   const marked = video.watermarkUrls[0] ?? null;
-  const useMarked = watermark === 'keep' && Boolean(marked);
+  // The reported source must describe the address actually returned, not the
+  // one requested: when the clean source is missing we fall back to the
+  // watermarked one (and vice versa), so label the fallback honestly.
+  const useMarked = (watermark === 'keep' && Boolean(marked)) || (!clean && Boolean(marked));
   return { url: (useMarked ? marked : clean) ?? marked ?? clean ?? '', source: useMarked ? 'watermarked' : 'no-watermark' };
 }
 
@@ -94,10 +97,20 @@ export async function fetchDouyinVideo(awemeId: string, ctx: ToolContext): Promi
   const cached = await ensureSession(ctx.stateDirectory, awemeId, ctx);
   const direct = await requestDetail(cached, awemeId, ctx.http, ctx);
   if (direct.awemeDetail) return normalize(direct.awemeDetail);
+  // The platform answered with an explicit error: report its own words
+  // instead of burning a browser bootstrap on a request it already refused.
+  if (direct.platformError) {
+    const { code, message } = direct.platformError;
+    throw new ToolError('TOOL_FAILED', `抖音平台返回错误${code !== undefined ? ` ${code}` : ''}：${message || '未说明原因'}。`);
+  }
   const refreshed = await bootstrapSession(awemeId, ctx.signal);
   await writeSession(ctx.stateDirectory, refreshed.session);
   const retried = await requestDetail(refreshed.session, awemeId, ctx.http, ctx);
   if (retried.awemeDetail) return normalize(retried.awemeDetail);
+  if (retried.platformError) {
+    const { code, message } = retried.platformError;
+    throw new ToolError('TOOL_FAILED', `抖音平台返回错误${code !== undefined ? ` ${code}` : ''}：${message || '未说明原因'}。`);
+  }
   // The platform rejected our signature; use the payload the page received.
   if (refreshed.detail) return normalize(refreshed.detail);
   throw new ToolError('FILE_NOT_FOUND', '未能读取该作品：作品可能不存在或已下架，也可能是抖音当前对本机发起了风控限流，请稍后重试。');

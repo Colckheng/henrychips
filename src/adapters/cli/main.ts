@@ -1,5 +1,5 @@
 import { parseArgs } from 'node:util';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { loadConfig } from '../../core/config.js';
 import { createRuntime } from '../../core/runtime.js';
 import * as credentials from '../../tools/netdisk/credentials.js';
@@ -116,7 +116,17 @@ async function main() {
   let input: unknown;
   if (command === 'run') {
     if (values.input === undefined && values['input-file'] === undefined) throw new Error('请指定 --input 或 --input-file。');
-    const raw = values.input ?? await readFile(values['input-file']!, 'utf8');
+    let raw: string;
+    if (values.input !== undefined) raw = values.input;
+    else {
+      // --input-file shares the configured file-size limit instead of being
+      // read into memory without a cap.
+      const { limits } = await loadConfig(values.config);
+      const inputFile = values['input-file']!;
+      if ((await stat(inputFile)).size > limits.fileBytes) throw new Error(`输入文件超过 ${limits.fileBytes} 字节上限。`);
+      raw = await readFile(inputFile, 'utf8');
+      if (Buffer.byteLength(raw) > limits.fileBytes) throw new Error(`输入文件超过 ${limits.fileBytes} 字节上限。`);
+    }
     try { input = JSON.parse(raw); } catch { throw new Error('输入必须是有效 JSON。'); }
   }
   if (command === 'credentials') {

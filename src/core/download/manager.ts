@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { ToolError } from '../errors.js';
 import { createFileWriter } from '../file-access.js';
@@ -238,6 +238,26 @@ export class DownloadManager {
         }
       }
       if (!result) throw new ToolError('TOOL_FAILED', '下载未产生结果。');
+      // The download is only done when the file on disk has the length the
+      // download reported. Until then the task is verifying, not completed.
+      const verifying = apply({
+        status: 'verifying',
+        bytesWritten: result.bytesWritten,
+        totalBytes: result.totalBytes,
+        rangeSupported: result.rangeSupported,
+      });
+      if (!verifying) return;
+      const checked = await verifyFileSize(path.join(this.options.outputDirectory, task.outputPath), result.totalBytes);
+      if (this.generationOf(task.id) !== generation) return;
+      if (!checked.ok) {
+        const actual = checked.actual === null ? '无法读取' : `${checked.actual} 字节`;
+        apply({
+          status: 'failed',
+          error: { code: 'TOOL_FAILED', message: `下载校验失败：文件大小与预期不一致，期望 ${result.totalBytes} 字节，实际 ${actual}。分段表与断点已保留，可继续下载。` },
+          finishedAt: new Date().toISOString(),
+        });
+        return;
+      }
       apply({
         status: 'completed',
         bytesWritten: result.bytesWritten,
@@ -290,3 +310,14 @@ export class DownloadManager {
 }
 
 export type { DownloadTask, TaskStatus };
+
+/**
+ * Checks the file on disk against the length the download reported. The
+ * check never throws and never touches the file: a mismatch is a failed
+ * task with its breakpoint kept, not a reason to delete anything.
+ */
+export async function verifyFileSize(file: string, expectedBytes: number): Promise<{ ok: true; actual: number } | { ok: false; actual: number | null }> {
+  const actual = await stat(file).then(entry => entry.size).catch(() => null);
+  if (actual === null) return { ok: false, actual: null };
+  return actual === expectedBytes ? { ok: true, actual } : { ok: false, actual };
+}

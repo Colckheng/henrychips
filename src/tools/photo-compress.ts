@@ -69,7 +69,7 @@ export const photoCompressTool = defineTool({
         withoutEnlargement: true,
       });
     }
-    pipeline = target === 'jpeg' ? pipeline.jpeg({ quality, mozjpeg: true }) : target === 'webp' ? pipeline.webp({ quality }) : pipeline.avif({ quality: Math.max(20, quality - 20) });
+    pipeline = target === 'jpeg' ? pipeline.jpeg({ quality, mozjpeg: true }) : target === 'webp' ? pipeline.webp({ quality }) : pipeline.avif({ quality });
     ctx.reportProgress?.({ phase: '编码输出', percent: 70 });
     const output = await pipeline.toBuffer();
     const info = await sharp(output).metadata();

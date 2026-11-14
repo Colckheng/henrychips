@@ -331,3 +331,61 @@ test('a broken connection is tried again instead of failing the download', async
   assert.equal(result.bytesWritten, payload.length);
   assert.equal((await readFile(path.join(directory, 'a.bin'))).toString(), '0123456789');
 });
+
+test('reports the real size when the last segment ends before the announced size', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'workstation-segment-short-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  // The platform announces 20 bytes, the file really has 13, and the real
+  // size cannot be asked for, so the last segment ends early.
+  const payload = Buffer.from('0123456789xyz');
+  const http = {
+    getStream: async (url: string, _signal: AbortSignal, options?: { headers?: Record<string, string> }) => {
+      const range = options?.headers?.Range ?? '';
+      const matched = /bytes=(\d+)-(\d*)/.exec(range);
+      const start = Number(matched?.[1] ?? 0);
+      const end = matched?.[2] ? Number(matched[2]) : payload.length - 1;
+      const slice = payload.subarray(start, Math.min(end + 1, payload.length));
+      return {
+        finalUrl: url, status: 206, contentType: 'application/octet-stream',
+        contentLength: slice.length, body: Readable.from([slice]),
+        headers: { 'content-range': `bytes ${start}-${start + slice.length - 1}/${payload.length}` },
+      };
+    },
+  } as unknown as PublicHttp;
+  const writer = createFileWriter(directory, new AbortController().signal, 1_048_576);
+  const result = await downloadSegmented(linkOf({ sizeBytes: 20 }), {
+    http, writer, signal: new AbortController().signal, outputPath: 'a.bin', connections: 2,
+  });
+  // The result carries the bytes that really arrived, not the announced size.
+  assert.equal(result.bytesWritten, payload.length);
+  assert.equal(result.totalBytes, payload.length);
+  assert.equal(result.table.size, payload.length);
+  assert.equal(result.table.segments[1]?.end, payload.length - 1);
+  // The file was preallocated to the announced size, so the zero bytes past
+  // the real end must be gone.
+  const onDisk = await readFile(path.join(directory, 'a.bin'));
+  assert.equal(onDisk.length, payload.length);
+  assert.equal(onDisk.toString(), '0123456789xyz');
+});
+
+test('rejects a segment table with a gap, an overlap, or a wrong end', () => {
+  const whole = { size: 100, segments: splitSegments(100, 2) };
+  assert.ok(parseSegmentTable(JSON.stringify(whole)));
+  const gap = { size: 100, segments: [{ start: 0, end: 49, done: true }, { start: 51, end: 99, done: false }] };
+  assert.equal(parseSegmentTable(JSON.stringify(gap)), null);
+  const overlap = { size: 100, segments: [{ start: 0, end: 50, done: false }, { start: 50, end: 99, done: false }] };
+  assert.equal(parseSegmentTable(JSON.stringify(overlap)), null);
+  const lateStart = { size: 100, segments: [{ start: 1, end: 50, done: false }, { start: 51, end: 99, done: false }] };
+  assert.equal(parseSegmentTable(JSON.stringify(lateStart)), null);
+  const shortEnd = { size: 100, segments: [{ start: 0, end: 49, done: false }, { start: 50, end: 98, done: false }] };
+  assert.equal(parseSegmentTable(JSON.stringify(shortEnd)), null);
+  const overEnd = { size: 100, segments: [{ start: 0, end: 49, done: false }, { start: 50, end: 100, done: false }] };
+  assert.equal(parseSegmentTable(JSON.stringify(overEnd)), null);
+  const empty = { size: 100, segments: [] };
+  assert.equal(parseSegmentTable(JSON.stringify(empty)), null);
+  // Stored out of order but continuous: still read, in order.
+  const shuffled = { size: 100, segments: [{ start: 50, end: 99, done: false }, { start: 0, end: 49, done: true }] };
+  const parsed = parseSegmentTable(JSON.stringify(shuffled));
+  assert.equal(parsed?.segments[0]?.start, 0);
+  assert.equal(parsed?.segments[1]?.start, 50);
+});

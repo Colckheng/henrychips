@@ -44,7 +44,7 @@
 | `csv_summary` | `csv-summary.ts` | `files:read` | UTF-8 CSV 行列统计、每列空值数、数值列 `min/max/sum/mean`、前 5 行预览 |
 | `pdf_extract` | `pdf-extract.ts` + `pdf-text.ts` / `pdf-worker.ts` | `files:read` | 按页提取 PDF 文字层，单次最多 30 页、10 万字符；在 Worker 里解析，取消/超时终止 Worker |
 | `xlsx_summary` | `xlsx-summary.ts` | `files:read` | 读 `.xlsx` 工作簿：工作表、表头、行数、逐列类型与数值统计、高频取值（只读） |
-| `doc_convert` | `doc-convert.ts` + `core/html-blocks.ts`、`core/markdown.ts`、`core/docx-build.ts`、`core/pdf-layout.ts`、`core/fonts.ts` | `files:read` `files:write` | PDF / DOCX / Markdown / HTML / TXT / 图片 之间互转，**全部在本进程内完成**，不调用 LibreOffice 或 pandoc；中文 PDF 用 `@pdf-lib/fontkit` 子集内嵌系统 TrueType 中文字体 |
+| `doc_convert` | `doc-convert.ts` + `core/html-blocks.ts`、`core/markdown.ts`、`core/docx-build.ts`、`core/pdf-layout.ts`、`core/fonts.ts` | `files:read` `files:write` | PDF / DOCX / Markdown / HTML / TXT / 图片 之间互转，**全部在本进程内完成**，不调用 LibreOffice 或 pandoc；中文 PDF 用 `@pdf-lib/fontkit` 子集内嵌仓库自带的 Noto Sans SC（`assets/fonts/NotoSansSC.ttf`，OFL 1.1）；系统 TrueType 中文字体只作后备 |
 | `photo_compress` | `photo-compress.ts` | `files:read` `files:write` | `sharp` 压缩照片，可转 JPEG/WebP/AVIF、限制最长边、默认移除 EXIF，返回压缩前后体积对比 |
 | `web_extract` | `web-extract.ts` | `network:public` | 抓公共网页取正文（`linkedom` 解析），输出带 `untrustedContent: true` 标记 |
 | `env_inspect` | `env-inspect.ts` | `process:probe` | 看平台、架构、Node 与 Git 版本 |
@@ -157,7 +157,7 @@ Electron 45.2.1 主进程里**直接跑服务**（不 spawn 子进程，打包�
 - **npm**（有 `package-lock.json`，建议 `npm ci`）。
 - **桌面端**：随 `npm install` 装上 Electron 45.2.1；**打包目标目前只有 Windows x64**（`electron-builder.json` 的 `win.target = ["nsis"]`，`desktop:dist` 固定 `--win --x64`）。桌面版自带 Node 运行时，**安装后不需要另装 Node**。
 - **抖音相关工具**：需要本机已安装 Google Chrome（`playwright-core` 以 `channel: 'chrome'` 启动）。
-- **PDF 中文输出**：需要系统里有 TrueType 中文字体（`src/core/fonts.ts` 按 SimHei → 等线 → 微软雅黑 顺序取；CFF/OTF 无法子集化，不作候选）。找不到中文字体时退回 Helvetica 并在结果里提示。
+- **PDF 中文输出**：仓库自带 Noto Sans SC（`assets/fonts/NotoSansSC.ttf`，SIL OFL 1.1），`src/core/fonts.ts` 首选内置字体、系统字体（黑体 → 等线 → 微软雅黑）只作后备；CFF/OTF 与 `.ttc` 无法子集化，不作候选。内置与系统字体都找不到时退回 Helvetica 并在结果里提示。
 - **中继服务器**：Node 22.13+（见 `deploy/RELAY-DEPLOY.md`）。
 
 ---
@@ -349,8 +349,8 @@ npm run desktop        # 构建后启动 Electron 外壳
 
 | 命令 | 覆盖范围 | 用例数 |
 | --- | --- | --- |
-| `npm test` | `tests/core`、`tests/tools`、`tests/adapters`、`tests/relay`：注册表、参数校验、执行器与取消、文件边界、公网地址拦截、CSV/PDF/表格/影音工具、HTTP/CLI/MCP 适配器、中继链路 | 111 |
-| `npm run test:web` | `tests/e2e/*.unit.ts(x)`：表单序列化、结果渲染组件 | 10 |
+| `npm test` | `tests/core`、`tests/tools`、`tests/adapters`、`tests/relay`：注册表、参数校验、执行器与取消、文件边界、公网地址拦截、CSV/PDF/表格/影音工具、HTTP/CLI/MCP 适配器、中继链路 | 405 |
+| `npm run test:web` | `tests/e2e/*.unit.ts(x)`：表单序列化、结果渲染组件 | 21 |
 | `npm run test:e2e` | `tests/e2e/*.spec.ts`：Playwright + 真实 Chrome，覆盖目录检索、填示例、跑工具、进度、跨页面保持、关标签页后取回结果、窄屏（375/1440）、键盘可达、错误重试等 | 20 |
 | `npm run test:desktop` | `tests/electron/desktop.spec.ts`：窗口渲染工作台、关窗仅隐藏且服务存活、托盘菜单项、开机自启开关 | 4 |
 | `npm run test:production` | `tests/production.test.ts`：非项目目录启动**编译产物**，比对 CLI / MCP / HTTP 三条路径结果一致，校验 MCP 暴露 13 个工具、PDF Worker 可用 | 1 |
