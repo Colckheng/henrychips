@@ -14,6 +14,12 @@ const APP_VERSION = '132';
 const PLATFORM = 'android';
 const SIGN_OS = 'web';
 const SIGN_VER = '3';
+/** How many entries one page of a listing holds. */
+const PAGE_SIZE = 100;
+/** How deep the folders of a share are walked, so a share that points into itself ends. */
+const MAX_DEPTH = 8;
+/** How many pages of one folder are read, so a broken cursor ends the walk. */
+const MAX_PAGES = 500;
 /** The signature counts from sixteen hours ahead, so a wrong clock is refused. */
 const SIGN_OFFSET_SECONDS = 57_600;
 /** The digits of the minute are replaced through this table before they are hashed. */
@@ -36,6 +42,12 @@ export type Pan123Adapter = NetdiskAdapter & {
   decodeDownloadUrl(downloadUrl: string): string | null;
   /** Turns the codes of the platform into a message. */
   describeError(code: number, message: string): string;
+  /** Reads the code of an answer, and refuses one the platform states as text. */
+  checkCode(answer: Record<string, unknown> | undefined): number;
+  /** Asks the platform for one page of a folder of the share. */
+  requestPage(context: AdapterContext, parentFileId: string, page: number, next: string): Promise<{ title: string; entries: NetdiskFile[]; next: string | null }>;
+  /** Reads a folder of the share and the folders in it. */
+  walk(context: AdapterContext, parentFileId: string, prefix: string, files: NetdiskFile[], depth: number, visited: Set<string>, seen: Set<string>): Promise<string>;
 };
 
 /** The crc32 of the platform is the ordinary one, written in lower case hex. */
@@ -58,7 +70,10 @@ function headersOf(): Record<string, string> {
 export const pan123Adapter: Pan123Adapter = {
   platform: 'pan123',
   label: '123 云盘',
-  requiresCredential: true,
+  // The listing of a share is open to a visitor, so only the download of a
+  // file asks for a login. The link still signs in, so a guest that asks
+  // for a direct link is refused there instead of at the listing.
+  requiresCredential: false,
 
   makeSign(path, ts) {
     const shifted = new Date((ts + SIGN_OFFSET_SECONDS) * 1000);
@@ -87,7 +102,9 @@ export const pan123Adapter: Pan123Adapter = {
     for (const item of raw) {
       if (!item || typeof item !== 'object') continue;
       const entry = item as Record<string, unknown>;
-      const id = typeof entry.FileId === 'string' ? entry.FileId : '';
+      // The platform states the id as a number, so a member whose id is
+      // read as text only would be dropped from the listing.
+      const id = typeof entry.FileId === 'string' ? entry.FileId : typeof entry.FileId === 'number' ? String(entry.FileId) : '';
       if (!id) continue;
       const name = typeof entry.FileName === 'string' ? entry.FileName : id;
       // The kind of a member is stated by its type: one is a folder.
@@ -143,6 +160,7 @@ export const pan123Adapter: Pan123Adapter = {
     if (code === 403) return '123 云盘拒绝了这次请求，提取码可能不正确。';
     if (code === 404) return '分享不存在或已经取消。';
     if (code === 429) return '123 云盘请求过于频繁，请稍后重试。';
+    if (code === 5103) return '分享不存在或已经取消。';
     return message || `123 云盘返回了错误码 ${code}。`;
   },
 
@@ -175,17 +193,35 @@ export const pan123Adapter: Pan123Adapter = {
     return token;
   },
 
-  async list(context: AdapterContext): Promise<NetdiskShare> {
-    await this.signIn(context);
+  /**
+   * Reads the business code of an answer.
+   *
+   * A code the platform states as text is a failure of the request, so it
+   * is reported with the very code instead of being read as a success,
+   * which would hand out an empty share.
+   */
+  checkCode(answer) {
+    const code = answer?.code;
+    if (typeof code === 'number') return code;
+    if (typeof code === 'string') {
+      throw new ToolError('TOOL_FAILED', this.describeError(-1, `123 云盘返回了业务码 ${code}。`));
+    }
+    return 0;
+  },
+
+  async requestPage(context, parentFileId, page, next) {
     const path = '/b/api/share/get';
     const sign = this.makeSign(path, Math.floor(Date.now() / 1000));
     const query = new URLSearchParams({
       shareKey: context.shareId,
-      limit: '100',
-      next: '0',
+      limit: String(PAGE_SIZE),
+      next,
       orderBy: 'file_name',
       orderDirection: 'asc',
-      page: '1',
+      page: String(page),
+      // The listing of a folder is refused without the id of its parent,
+      // and the root of the share is the folder with the id zero.
+      parentFileId,
       ...(context.code ? { SharePwd: context.code } : {}),
     });
     const response = await context.session.get(`${SHARE_GET_URL}?${query.toString()}`, {
@@ -194,12 +230,69 @@ export const pan123Adapter: Pan123Adapter = {
       'auth-value': sign.authValue,
     });
     const answer = response.data as Record<string, unknown> | undefined;
-    const code = typeof answer?.code === 'number' ? answer.code : 0;
+    const code = this.checkCode(answer);
     if (code !== 0) {
       throw new ToolError('TOOL_FAILED', this.describeError(code, typeof answer?.message === 'string' ? answer.message : ''));
     }
     const data = answer && typeof answer.data === 'object' ? answer.data as Record<string, unknown> : {};
-    return { title: typeof data.shareName === 'string' ? data.shareName : '123 分享', files: this.parseEntries(data) };
+    // The cursor of the next page is a string, and '-1' says there is no
+    // next page, so the cursor is read as text.
+    const cursor = typeof data.Next === 'string' ? data.Next : typeof data.Next === 'number' ? String(data.Next) : '';
+    return {
+      title: typeof data.shareName === 'string' ? data.shareName : '',
+      entries: this.parseEntries(data),
+      next: cursor === '-1' || cursor === '' ? null : cursor,
+    };
+  },
+
+  /**
+   * Reads a folder of the share and the folders in it.
+   *
+   * The depth is limited, because a share that points into itself would
+   * otherwise walk forever. The title of the folder is handed back, so the
+   * listing of the share keeps the name the platform gave it.
+   */
+  async walk(context, parentFileId, prefix, files, depth, visited, seen) {
+    if (depth > MAX_DEPTH) return '';
+    // A folder that was already read is not read again, so a folder that
+    // points at itself ends the walk.
+    if (visited.has(parentFileId)) return '';
+    visited.add(parentFileId);
+    let title = '';
+    let page = 1;
+    let next = '0';
+    const entries: NetdiskFile[] = [];
+    for (; page <= MAX_PAGES; page++) {
+      context.reportProgress(`读取目录第 ${page} 页`);
+      const batch = await this.requestPage(context, parentFileId, page, next);
+      if (!title) title = batch.title;
+      entries.push(...batch.entries);
+      if (batch.next === null) break;
+      next = batch.next;
+    }
+    for (const entry of entries) {
+      if (seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      // The path of the entry carries the folders it is in.
+      const path = `${prefix}${entry.name}${entry.isDirectory ? '/' : ''}`;
+      files.push({ ...entry, path });
+      if (entry.isDirectory) {
+        await this.walk(context, entry.id, `${prefix}${entry.name}/`, files, depth + 1, visited, seen);
+      }
+    }
+    return title;
+  },
+
+  async list(context: AdapterContext): Promise<NetdiskShare> {
+    // The listing of a share is open to a visitor, so the login is only
+    // asked for when the caller configured one. The token travels with the
+    // listing then, and a share that needs a member still reads.
+    if (context.credential?.username && context.credential.password) {
+      await this.signIn(context);
+    }
+    const files: NetdiskFile[] = [];
+    const title = await this.walk(context, '0', '', files, 0, new Set(), new Set());
+    return { title: title || '123 分享', files };
   },
 
   async link(context: AdapterContext, file: NetdiskFile): Promise<NetdiskLink> {
@@ -224,7 +317,7 @@ export const pan123Adapter: Pan123Adapter = {
       'auth-value': sign.authValue,
     });
     const answer = response.data as Record<string, unknown> | undefined;
-    const code = typeof answer?.code === 'number' ? answer.code : 0;
+    const code = this.checkCode(answer);
     if (code !== 0) {
       throw new ToolError('TOOL_FAILED', this.describeError(code, typeof answer?.message === 'string' ? answer.message : ''));
     }

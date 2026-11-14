@@ -123,6 +123,112 @@ test('the token of the user reaches the platform', async () => {
   assert.equal(listingBody.includes('secret'), false);
 });
 
+test('reads a numeric id of a member as text', () => {
+  // The platform states the id as a number, so a member whose id is read
+  // as text only would be dropped from the listing.
+  const files = pan123Adapter.parseEntries({
+    InfoList: [{ FileId: 1947332, FileName: 'QQ', Type: 1, Size: 912652611 }],
+  });
+  assert.equal(files.length, 1);
+  assert.equal(files[0].id, '1947332');
+  assert.equal(files[0].path, 'QQ/');
+  assert.equal(files[0].isDirectory, true);
+});
+
+test('a business code stated as text is a failure, not an empty share', async () => {
+  const http: PublicHttp = {
+    getHtml: async () => { throw new Error('unexpected request'); },
+    getJson: async () => ({ finalUrl: '', status: 200, data: { code: '5103', message: '此分享不存在' } }),
+    getBinary: async () => { throw new Error('unexpected request'); },
+    getRaw: async () => { throw new Error('unexpected request'); },
+    getHead: async () => { throw new Error('unexpected request'); },
+    postForm: async () => { throw new Error('unexpected request'); },
+    postJson: async () => { throw new Error('unexpected request'); },
+    getStream: async () => { throw new Error('unexpected request'); },
+  };
+  const context = contextOf(http);
+  context.credential = null;
+  await assert.rejects(() => pan123Adapter.list(context), /5103/);
+});
+
+/**
+ * The server of the platform, with a share that holds a folder and more
+ * than one page. A folder is listed with the id of its parent, and the
+ * next page with the cursor the platform handed out.
+ */
+function fakeHttpWithFolders(seen: Seen[]): PublicHttp {
+  const record = (method: string, url: string, headers?: Record<string, string>, body?: unknown) => {
+    seen.push({ method, url, headers, body });
+  };
+  const listing = (shareName: string, next: string, infoList: unknown[]) => ({
+    finalUrl: '', status: 200, data: { code: 0, data: { shareName, Next: next, InfoList: infoList } },
+  });
+  return {
+    getHtml: async () => { throw new Error('unexpected request'); },
+    getJson: async (url, _signal, options) => {
+      record('GET', url, options?.headers);
+      if (url.includes('/b/api/share/get')) {
+        const params = new URL(url).searchParams;
+        const parent = params.get('parentFileId');
+        const next = params.get('next');
+        if (parent === '0' && next === '0') {
+          return listing('QQ 分享', 'cursor-1', [
+            { FileId: 1947332, FileName: 'QQ', Type: 1, Size: 912652611 },
+          ]);
+        }
+        if (parent === '0' && next === 'cursor-1') {
+          return listing('QQ 分享', '-1', [
+            { FileId: 'f0', FileName: 'root.txt', Size: 10, Type: 0, 'S3KeyFlag': 'K0', Etag: 'T0', StorageNode: 'N0' },
+          ]);
+        }
+        if (parent === '1947332' && next === '0') {
+          return listing('QQ 分享', '-1', [
+            { FileId: 1001, FileName: 'a.apk', Size: 100, Type: 0, 'S3KeyFlag': 'K1', Etag: 'T1', StorageNode: 'N1' },
+            { FileId: 1002, FileName: 'b.apk', Size: 200, Type: 0, 'S3KeyFlag': 'K2', Etag: 'T2', StorageNode: 'N2' },
+          ]);
+        }
+        throw new Error(`unexpected listing: ${url}`);
+      }
+      throw new Error(`unexpected request: ${url}`);
+    },
+    getBinary: async () => { throw new Error('unexpected request'); },
+    getRaw: async () => { throw new Error('unexpected request'); },
+    getHead: async () => { throw new Error('unexpected request'); },
+    postForm: async () => { throw new Error('unexpected request'); },
+    postJson: async () => { throw new Error('unexpected request'); },
+    getStream: async () => { throw new Error('unexpected request'); },
+  };
+}
+
+test('a share is listed without a login, folders and further pages included', async () => {
+  const seen: Seen[] = [];
+  const context = contextOf(fakeHttpWithFolders(seen));
+  context.credential = null;
+  context.code = 'hhhh';
+  const share = await pan123Adapter.list(context);
+  assert.equal(share.title, 'QQ 分享');
+  // The folder itself stays in the list, and the files inside it carry
+  // the folder in their path. A folder is read right after it is listed,
+  // so its children come before the siblings of the folder.
+  assert.deepEqual(share.files.map(file => file.path), ['QQ/', 'QQ/a.apk', 'QQ/b.apk', 'root.txt']);
+
+  // No sign-in was asked for, so the listing went out on its own.
+  assert.equal(seen.some(call => call.url.includes('/user/sign_in')), false);
+  const calls = seen.filter(call => call.url.includes('/b/api/share/get'));
+  assert.equal(calls.length, 3);
+  // The root is the folder with the id zero, and the signature still
+  // travels with a listing that has no login.
+  assert.equal(new URL(calls[0]!.url).searchParams.get('parentFileId'), '0');
+  assert.equal(new URL(calls[0]!.url).searchParams.get('SharePwd'), 'hhhh');
+  assert.ok(calls[0]!.headers?.['auth-key']);
+  assert.ok(calls[0]!.headers?.['auth-value']);
+  // The second page of the root is asked for with the cursor of the first.
+  assert.equal(new URL(calls[1]!.url).searchParams.get('parentFileId'), '0');
+  assert.equal(new URL(calls[1]!.url).searchParams.get('next'), 'cursor-1');
+  // The folder is entered with the id the platform gave it.
+  assert.equal(new URL(calls[2]!.url).searchParams.get('parentFileId'), '1947332');
+});
+
 test('the passcode is only sent when there is one', async () => {
   const seen: Seen[] = [];
   await pan123Adapter.list(contextOf(fakeHttp(seen)));

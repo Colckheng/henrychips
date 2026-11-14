@@ -349,8 +349,8 @@ npm run desktop        # 构建后启动 Electron 外壳
 
 | 命令 | 覆盖范围 | 用例数 |
 | --- | --- | --- |
-| `npm test` | `tests/core`、`tests/tools`、`tests/adapters`、`tests/relay`：注册表、参数校验、执行器与取消、文件边界、公网地址拦截、CSV/PDF/表格/影音工具、HTTP/CLI/MCP 适配器、中继链路 | 405 |
-| `npm run test:web` | `tests/e2e/*.unit.ts(x)`：表单序列化、结果渲染组件 | 21 |
+| `npm test` | `tests/core`、`tests/tools`、`tests/adapters`、`tests/relay`：注册表、参数校验、执行器与取消、文件边界、公网地址拦截、CSV/PDF/表格/影音工具、HTTP/CLI/MCP 适配器、中继链路 | 435 |
+| `npm run test:web` | `tests/e2e/*.unit.ts(x)`：表单序列化、结果渲染组件 | 25 |
 | `npm run test:e2e` | `tests/e2e/*.spec.ts`：Playwright + 真实 Chrome，覆盖目录检索、填示例、跑工具、进度、跨页面保持、关标签页后取回结果、窄屏（375/1440）、键盘可达、错误重试等 | 20 |
 | `npm run test:desktop` | `tests/electron/desktop.spec.ts`：窗口渲染工作台、关窗仅隐藏且服务存活、托盘菜单项、开机自启开关 | 4 |
 | `npm run test:production` | `tests/production.test.ts`：非项目目录启动**编译产物**，比对 CLI / MCP / HTTP 三条路径结果一致，校验 MCP 暴露 13 个工具、PDF Worker 可用 | 1 |
@@ -419,6 +419,6 @@ npm run relay:node
 > 附带的第三方工具（B 站 / 抖音解析）只处理公开内容，不绕过登录或付费限制；下载第三方平台视频前请自行确认平台服务条款与版权授权范围。
 
 - 网盘取直链用到的平台内部常量（百度的 `psign`、139 的 AES 密钥、蓝奏云的人机校验答案）取自第三方开源客户端 YunX 的实现，**平台改版时可能失效**。
-- 九家网盘平台里**蓝奏云与夸克**在真实平台上端到端验证过，其余七家按公开协议形状做了单元测试，**尚未对真实平台跑通**。
+- 九家网盘平台的分享列目录都已拿真实分享验证过（夸克还验了取链）；其中光鸭的例子分享在平台侧就是列不出来的，网页端自己也显示“暂无文件”，适配器返回空列表与之相符。取直链与 CLI 端到端仍待 Windows 真机验证。
 - 真实平台验证需要**关掉本机的代理**（FlClash 的 fake-IP 模式把所有域名解析到 `198.18.0.0/15` 保留段，会被公网客户端的地址检查挡下，既有的网页抓取工具也一样）。
 - 下载第三方平台内容前，请自行确认平台服务条款与版权授权范围。

@@ -40,6 +40,8 @@ export type LanzouAdapter = NetdiskAdapter & {
   fetchSharePage(context: AdapterContext): Promise<LanzouSharePage>;
   fetchPage(context: AdapterContext, url: string, referer: string): Promise<string>;
   listFolder(context: AdapterContext, page: LanzouSharePage, pwd: string | null): Promise<NetdiskFile[]>;
+  /** Reads a folder of the share and the folders in it. */
+  walk(context: AdapterContext, page: LanzouSharePage, params: FolderParams, pwd: string | null, prefix: string, files: NetdiskFile[], depth: number, visited: Set<string>, seen: Set<string>): Promise<void>;
   requestPage(context: AdapterContext, page: LanzouSharePage, params: FolderParams, pwd: string | null, pg: number): Promise<unknown>;
   verifyLink(context: AdapterContext, jump: string, referer: string): Promise<{ url: string; rangeSupported: boolean | null }>;
   readNode(context: AdapterContext, url: string, referer: string): Promise<NodeAnswer>;
@@ -74,6 +76,34 @@ function jsValue(source: string, name: string): string | null {
   const matched = new RegExp(`(?:var\\s+)?(?<![\\w?&=])${name}\\s*=\\s*(?:["']([^"']*)["']|([A-Za-z0-9_.:/?=&+-]+))`).exec(source);
   if (!matched) return null;
   return matched[1] ?? matched[2] ?? null;
+}
+
+/**
+ * The data of the filemoreajax call, as an object of the page. A page of a
+ * newer shape states the parameters of the folder in the data of that call,
+ * instead of in variables of its own.
+ */
+function objectLiteralOf(script: string): string | null {
+  const at = script.indexOf('filemoreajax');
+  if (at < 0) return null;
+  const matched = /data\s*:\s*\{([^}]*)\}/.exec(script.slice(at));
+  return matched ? matched[1] : null;
+}
+
+/**
+ * Reads one member of the data of the filemoreajax call. The value may be a
+ * bare number, a quoted string, or the name of a variable whose value lives
+ * in a `var` of the page, so a bare name is read out of its declaration.
+ * The lookbehind keeps the key from being found inside another word, so "t"
+ * does not pick the value of "content".
+ */
+function objectValue(literal: string, script: string, name: string): string | null {
+  const matched = new RegExp(`(?<![\\w'"])['"]?${name}['"]?\\s*:\\s*(?:['"]([^'"]*)['"]|([A-Za-z0-9_]+))`).exec(literal);
+  if (!matched) return null;
+  if (matched[1] !== undefined) return matched[1];
+  const token = matched[2];
+  if (/^\d+$/.test(token)) return token;
+  return jsValue(script, token);
 }
 
 /**
@@ -134,6 +164,8 @@ const BACKOFF_BASE_MS = 600;
 const MAX_RETRIES = 3;
 /** The spacing between two pages of a folder. */
 const PAGE_INTERVAL_MS = 800;
+/** How deep the folders of a share are walked, so a share that points into itself ends. */
+const MAX_DEPTH = 8;
 /**
  * The node answers the submission of the verification page only after it has
  * settled. A submission that comes at once is refused with a sign error, so
@@ -191,6 +223,24 @@ export const lanzouAdapter: LanzouAdapter = {
     const fid = statedId ?? shareIdOf(url);
     const t = jsValue(script, 't');
     const k = jsValue(script, 'k');
+    let folderParams: FolderParams | null = null;
+    if (lx && t && k) {
+      folderParams = { lx, fid, t, k };
+    } else {
+      // A page of a newer shape states the parameters in the data of the
+      // filemoreajax call, as an object, and the values of `t` and `k` are
+      // the names of variables whose values live in a `var` of the page.
+      const literal = objectLiteralOf(script);
+      if (literal) {
+        const newLx = objectValue(literal, script, 'lx');
+        const newFid = objectValue(literal, script, 'fid');
+        const newT = objectValue(literal, script, 't');
+        const newK = objectValue(literal, script, 'k');
+        if (newLx && newT && newK) {
+          folderParams = { lx: newLx, fid: newFid ?? fid, t: newT, k: newK };
+        }
+      }
+    }
     const title = /<title[^>]*>([^<]*)<\/title>/i.exec(html)?.[1]?.trim() ?? '';
     const sizeText = /(?:文件大小|大小)\s*[:：]\s*([\d.]+)\s*([KMGT]?)(?:i?B)?/i.exec(html);
     const shareId = shareIdOf(url);
@@ -205,7 +255,7 @@ export const lanzouAdapter: LanzouAdapter = {
     };
     return {
       baseUrl, title: title || '蓝奏分享', isFolder, needsPwd, fileId,
-      folderParams: isFolder && lx && t && k ? { lx, fid, t, k } : null,
+      folderParams: isFolder ? folderParams : null,
       singleFile, html,
     };
   },
@@ -338,6 +388,26 @@ export const lanzouAdapter: LanzouAdapter = {
     if (!params) throw new ToolError('TOOL_FAILED', '无法从分享页解析出目录参数。');
     const files: NetdiskFile[] = [];
     const seen = new Set<string>();
+    const visited = new Set<string>();
+    await this.walk(context, page, params, pwd, '', files, 0, visited, seen);
+    return files;
+  },
+
+  /**
+   * Reads a folder of the share and the folders in it.
+   *
+   * The depth is limited, because a share that points into itself would
+   * otherwise walk forever. A folder of the share lives on its own page,
+   * the way the page of the platform links it, so the member page is read
+   * before the folder is entered: it carries the parameters of that folder.
+   */
+  async walk(context, page, params, pwd, prefix, files, depth, visited, seen) {
+    if (depth > MAX_DEPTH) return;
+    // A folder that was already read is not read again, so a folder that
+    // points at itself ends the walk.
+    if (visited.has(params.fid)) return;
+    visited.add(params.fid);
+    const folders: NetdiskFile[] = [];
     for (let pg = 1; pg <= 500; pg++) {
       context.reportProgress(`读取目录第 ${pg} 页`);
       // The pages of a folder are spaced, so the platform does not treat the
@@ -367,11 +437,10 @@ export const lanzouAdapter: LanzouAdapter = {
         seen.add(id);
         const name = item.name_all || item.name || id;
         const isDirectory = item.isfolder === '1' || item.is_dir === '1';
-        files.push({
+        const entry: NetdiskFile = {
           id,
-          // The path is the name the user reads, so it can be pasted into the
-          // tool again; a folder carries the separator of its children.
-          path: isDirectory ? `${name}/` : name,
+          // The path of the entry carries the folders it is in.
+          path: `${prefix}${name}${isDirectory ? '/' : ''}`,
           // The address the download is started from is kept apart from the
           // path, because the path is read by the user and the address is not.
           fidToken: address,
@@ -379,12 +448,23 @@ export const lanzouAdapter: LanzouAdapter = {
           sizeBytes: this.parseDisplaySize(item.size ?? '0') || null,
           isDirectory,
           modifiedAt: item.time ?? undefined,
-        });
+        };
+        files.push(entry);
+        if (isDirectory) folders.push(entry);
         added++;
       }
       if (!added) break;
     }
-    return files;
+    for (const folder of folders) {
+      const address = folder.fidToken ?? folder.id;
+      const memberUrl = `${page.baseUrl}/${address}`;
+      const html = await this.fetchPage(context, memberUrl, context.shareUrl);
+      const sub = this.parseSharePage(html, memberUrl);
+      // A member page without the parameters of a folder cannot be entered,
+      // so the folder stays in the list with no members of its own.
+      if (!sub.isFolder || !sub.folderParams) continue;
+      await this.walk(context, page, sub.folderParams, pwd, folder.path, files, depth + 1, visited, seen);
+    }
   },
 
   /**

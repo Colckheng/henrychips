@@ -8,6 +8,8 @@ const CLIENT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 
 const API_BASE = 'https://pc-api.uc.cn';
 const WEB_SITE = 'https://fast.uc.cn';
 const PAGE_SIZE = 50;
+/** How deep the folders of a share are walked, so a share that points into itself ends. */
+const MAX_DEPTH = 8;
 
 /** The business answer of the platform, before it is looked at closely. */
 interface UcAnswer {
@@ -28,6 +30,10 @@ export type UcAdapter = NetdiskAdapter & {
   describeError(code: number, message: string): string;
   /** The guest token of the platform, which the CDN demands back. */
   readGuestToken(answer: UcAnswer): string;
+  /** Asks the platform for one page of a folder and refuses an answer that carries a code. */
+  requestPage(context: AdapterContext, stoken: string, parent: string, page: number): Promise<NetdiskFile[]>;
+  /** Reads a folder of the share and the folders in it. */
+  walk(context: AdapterContext, stoken: string, parent: string, prefix: string, files: NetdiskFile[], depth: number, visited: Set<string>, seen: Set<string>): Promise<void>;
 };
 
 /** The headers the platform expects on a share request. */
@@ -98,6 +104,69 @@ export const ucAdapter: UcAdapter = {
     return typeof top === 'string' ? top : '';
   },
 
+  async requestPage(context, stoken, parent, page) {
+    const query = new URLSearchParams({
+      entry: 'ft', fr: 'pc', pr: 'UCBrowser',
+      pwd_id: context.shareId,
+      pdir_fid: parent,
+      fetch_file_list: '1',
+      passcode: context.code ?? '',
+      _page: String(page),
+      _size: String(PAGE_SIZE),
+      _fetch_total: '1',
+      _fetch_task: '1',
+      _fetch_share: '1',
+      _sort: '',
+      stoken,
+    });
+    const response = await context.session.get(
+      `${API_BASE}/1/clouddrive/transfer_share/detail?${query.toString()}`,
+      headersOf(),
+    );
+    const answer = (response.data ?? {}) as UcAnswer;
+    // The answer carries its own status and business code, and either one
+    // says the folder was refused. A refused folder is reported with the
+    // words of the platform instead of being read as an empty folder.
+    const status = typeof answer.status === 'number' ? answer.status : response.status;
+    const code = typeof answer.code === 'number' ? answer.code : status;
+    if (status !== 200 || code !== 0) {
+      throw new ToolError('TOOL_FAILED', this.describeError(code, typeof answer.message === 'string' ? answer.message : ''));
+    }
+    return this.parseEntries(answer.data);
+  },
+
+  /**
+   * Reads a folder of the share and the folders in it.
+   *
+   * The depth is limited, because a share that points into itself would
+   * otherwise walk forever.
+   */
+  async walk(context, stoken, parent, prefix, files, depth, visited, seen) {
+    if (depth > MAX_DEPTH) return;
+    // A folder that was already read is not read again, so a folder that
+    // points at itself ends the walk.
+    if (visited.has(parent)) return;
+    visited.add(parent);
+    const entries: NetdiskFile[] = [];
+    let page = 1;
+    for (; page <= 500; page++) {
+      const batch = await this.requestPage(context, stoken, parent, page);
+      entries.push(...batch);
+      // A page that is not full is the last one of the folder.
+      if (batch.length < PAGE_SIZE) break;
+    }
+    for (const entry of entries) {
+      if (seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      // The path of the entry carries the folders it is in.
+      const path = `${prefix}${entry.name}${entry.isDirectory ? '/' : ''}`;
+      files.push({ ...entry, path });
+      if (entry.isDirectory) {
+        await this.walk(context, stoken, entry.id, `${prefix}${entry.name}/`, files, depth + 1, visited, seen);
+      }
+    }
+  },
+
   async list(context: AdapterContext): Promise<NetdiskShare> {
     const tokenResponse = await context.session.postJson(
       `${API_BASE}/1/clouddrive/share/sharepage/token?pr=UCBrowser&fr=pc`,
@@ -108,34 +177,18 @@ export const ucAdapter: UcAdapter = {
     const token = this.parseShareToken(tokenAnswer.data);
     if (!token.stoken) throw new ToolError('TOOL_FAILED', 'UC 网盘没有返回分享令牌，提取码可能不正确。');
 
+    // The root of a share is the folder the platform calls zero. The token
+    // used to state the first member of the share, but a share with several
+    // members at the top states none, so the root is always asked for by
+    // zero and every folder in it is walked into.
     const files: NetdiskFile[] = [];
-    let page = 1;
-    for (; page <= 500; page++) {
-      const query = new URLSearchParams({
-        entry: 'ft', fr: 'pc', pr: 'UCBrowser',
-        pwd_id: context.shareId,
-        pdir_fid: token.firstFid,
-        fetch_file_list: '1',
-        passcode: context.code ?? '',
-        _page: String(page),
-        _size: String(PAGE_SIZE),
-        _fetch_total: '1',
-        _fetch_task: '1',
-        _fetch_share: '1',
-        _sort: '',
-        stoken: token.stoken,
-      });
-      const listResponse = await context.session.get(
-        `${API_BASE}/1/clouddrive/transfer_share/detail?${query.toString()}`,
-        headersOf(),
-      );
-      const listAnswer = (listResponse.data ?? {}) as UcAnswer;
-      const entries = this.parseEntries(listAnswer.data);
-      files.push(...entries);
-      const total = Number((listAnswer.data as Record<string, unknown> | undefined)?.total ?? Number.NaN);
-      if (!entries.length) break;
-      if (Number.isFinite(total) && files.length >= total) break;
-    }
+    // A folder that is already visited is not visited again, so a folder that
+    // points at itself does not walk forever.
+    const visited = new Set<string>();
+    // An entry that is already listed is not listed again, so a folder that
+    // points at itself does not fill the list with copies of itself.
+    const seen = new Set<string>();
+    await this.walk(context, token.stoken, '0', '', files, 0, visited, seen);
     return { title: token.title || 'UC 分享', files };
   },
 

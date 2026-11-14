@@ -43,6 +43,38 @@ const folderPage = `<html><head><title>文件夹</title></head><body>
   <script>var lx = "1"; var fid = "abc"; var t = "t1"; var k = "k1";</script>
   </body></html>`;
 
+/** The landing page of a folder share, in the shape the platform sends now:
+ * the parameters live in the data of the filemoreajax call, and `t` and `k`
+ * are the names of variables declared elsewhere in the page. */
+const newFolderPage = `<html><head><title>CopyTranslator翻译</title></head><body>
+  <div id="pwbox">请输入密码</div>
+  <script>
+  var ibf8ej = '1794664936';
+  var _hdkgc = 'c0f0dabb316ddc976a4453dd9d3ae824';
+  var pgs = 1;
+  function file(){
+    $.ajax({
+      type : 'post',
+      url : '/filemoreajax.php?file=13168782',
+      data : {
+        'lx':2,
+        'fid':13168782,
+        'uid':'3693297',
+        'puid':'BjUCY1o_bA2QIbANsUTJXe1E6ATMDZVdhADEBMVQ8BjQAM1Y3WSlUMgdhBGBTMQU0VjoOO1U8',
+        'pg':pgs,
+        'rep':'0',
+        't':ibf8ej,
+        'k':_hdkgc,
+        'up':1,
+        'ls':1,
+        'pwd':pwd
+      },
+      dataType : 'json',
+    });
+  }
+  </script>
+  </body></html>`;
+
 interface Route {
   status?: number;
   html?: string;
@@ -175,6 +207,22 @@ test('reads the variables of a page out of its scripts only', () => {
   assert.deepEqual(parsed.folderParams, { lx: '1', fid: 'abc', t: 't1', k: 'k1' });
 });
 
+test('reads the folder parameters out of the filemoreajax call of a newer page', () => {
+  const parsed = lanzouAdapter.parseSharePage(newFolderPage, 'https://wxjyxlwmh.lanzouv.com/b00mq5puhc');
+  assert.equal(parsed.isFolder, true);
+  assert.equal(parsed.needsPwd, true);
+  assert.equal(parsed.title, 'CopyTranslator翻译');
+  // `t` and `k` are the names of variables, so their values are read out of
+  // the declarations of those variables.
+  assert.deepEqual(parsed.folderParams, { lx: '2', fid: '13168782', t: '1794664936', k: 'c0f0dabb316ddc976a4453dd9d3ae824' });
+});
+
+test('reads quoted values out of the filemoreajax call as well', () => {
+  const html = newFolderPage.replace(`'t':ibf8ej,`, `'t':'t-lit',`).replace(`'k':_hdkgc,`, `'k':"k-lit",`);
+  const parsed = lanzouAdapter.parseSharePage(html, 'https://wxjyxlwmh.lanzouv.com/b00mq5puhc');
+  assert.deepEqual(parsed.folderParams, { lx: '2', fid: '13168782', t: 't-lit', k: 'k-lit' });
+});
+
 test('reads the endpoint and the tokens of the inner page', () => {
   const params = lanzouAdapter.parseInnerPage(innerPage);
   assert.equal(params?.endpoint, 'https://apifile.woozooo.com/ajaxfile.php?file=6513996');
@@ -208,6 +256,10 @@ test('refuses a share with a passcode when no code was given', async () => {
 test('pages through a folder share and keeps the address of every member', async () => {
   const { http } = fakeHttp({
     '/iXnuF4c8sqmb': { html: folderPage },
+    // The folder member has its own page, so the walk reads it before it
+    // decides whether the folder can be entered. This one carries the same
+    // parameters as the root, so the walk ends there instead of looping.
+    '/def': { html: folderPage },
     '/filemoreajax.php': {
       data: {
         zt: 1,
@@ -233,6 +285,94 @@ test('pages through a folder share and keeps the address of every member', async
   assert.equal(share.files[1].fidToken, 'def');
   assert.equal(share.files[1].path, 'notes.txt/');
   assert.equal(share.files[1].name, 'notes.txt');
+});
+
+test('lists a folder share whose page states the parameters in the new shape', async () => {
+  const { http, calls } = fakeHttp({
+    '/b00mq5puhc': { html: newFolderPage },
+    '/filemoreajax.php': {
+      data: {
+        zt: 1,
+        text: [
+          { id: 'iDZ613j2pu8d', name_all: 'CopyTranslator译v12.1.0绿色版.rar', size: '62.9 M', isfolder: '0', time: '2026-02-24' },
+          { id: 'iGTJP3igy2ti?webpage=CThTMwltUDAHZ1ExAWBca1c9AjRRcgo6V2dbaVA6W2tSZAZhCGBVOVR_bUTY_c', name_all: 'CopyTranslator译v12.0.0绿色版.7z', size: '51.8 M', isfolder: '0', time: '2026-02-14' },
+        ],
+      },
+    },
+  });
+  const context = { ...contextOf(http, '52pj'), shareUrl: 'https://wxjyxlwmh.lanzouv.com/b00mq5puhc' };
+  const share = await lanzouAdapter.list(context);
+  assert.equal(share.title, 'CopyTranslator翻译');
+  assert.equal(share.files.length, 2);
+  assert.equal(share.files[0].name, 'CopyTranslator译v12.1.0绿色版.rar');
+  assert.equal(share.files[0].sizeBytes, 65955430);
+  assert.equal(share.files[1].name, 'CopyTranslator译v12.0.0绿色版.7z');
+  assert.equal(share.files[1].sizeBytes, 54316237);
+  // The parameters of the page are the ones the folder is asked with.
+  const posted = calls.find(call => call.startsWith('POST https://wxjyxlwmh.lanzouv.com/filemoreajax.php'));
+  assert.ok(posted, 'the folder endpoint must be asked');
+  assert.equal(posted?.includes('"lx":"2"'), true);
+  assert.equal(posted?.includes('"fid":"13168782"'), true);
+  assert.equal(posted?.includes('"t":"1794664936"'), true);
+  assert.equal(posted?.includes('"k":"c0f0dabb316ddc976a4453dd9d3ae824"'), true);
+  assert.equal(posted?.includes('"pwd":"52pj"'), true);
+});
+
+test('walks into every folder of a folder share and keeps the full path', async () => {
+  const posts: Array<{ url: string; fields: Record<string, string> }> = [];
+  const pages: Record<string, string> = {
+    '/iXnuF4c8sqmb': folderPage,
+    '/sub1': `<html><head><title>sub</title></head><body>
+      <script>var filemoreajax = 1;</script>
+      <script>var lx = "1"; var fid = "sub1"; var t = "t2"; var k = "k2";</script>
+      </body></html>`,
+    '/deep1': `<html><head><title>deep</title></head><body>
+      <script>var filemoreajax = 1;</script>
+      <script>var lx = "1"; var fid = "deep1"; var t = "t3"; var k = "k3";</script>
+      </body></html>`,
+  };
+  const listings: Record<string, Array<Record<string, string>>> = {
+    abc: [
+      { id: 'f1', name_all: 'root.txt', size: '100', isfolder: '0', time: '2024-01-01 10:00' },
+      { id: 'sub1', name_all: 'sub', size: '0', isfolder: '1' },
+    ],
+    sub1: [
+      { id: 'f2', name_all: 'mid.txt', size: '200', isfolder: '0' },
+      { id: 'deep1', name_all: 'deep', size: '0', isfolder: '1' },
+    ],
+    deep1: [
+      { id: 'f3', name_all: 'leaf.txt', size: '300', isfolder: '0' },
+    ],
+  };
+  const http: PublicHttp = {
+    getHtml: async (url) => {
+      const html = pages[new URL(url).pathname];
+      if (html === undefined) throw new Error(`unexpected request: ${url}`);
+      return { finalUrl: url, html, status: 200 };
+    },
+    getJson: async () => { throw new Error('unexpected request'); },
+    getBinary: async () => { throw new Error('unexpected request'); },
+    getRaw: async () => { throw new Error('unexpected request'); },
+    getHead: async () => { throw new Error('unexpected request'); },
+    postForm: async (url, fields) => {
+      posts.push({ url, fields });
+      if (fields.pg !== '1') return { finalUrl: url, data: { zt: 2 }, status: 200 };
+      return { finalUrl: url, data: { zt: 1, text: listings[fields.fid] ?? [] }, status: 200 };
+    },
+    postJson: async () => { throw new Error('unexpected request'); },
+    getStream: async () => { throw new Error('unexpected request'); },
+  };
+  const share = await lanzouAdapter.list(contextOf(http));
+  assert.deepEqual(
+    share.files.map(file => file.path),
+    ['root.txt', 'sub/', 'sub/mid.txt', 'sub/deep/', 'sub/deep/leaf.txt'],
+  );
+  assert.deepEqual(share.files.map(file => file.id), ['f1', 'sub1', 'f2', 'deep1', 'f3']);
+  // Every folder is entered with the parameters of its own page.
+  assert.deepEqual(
+    posts.filter(post => post.fields.pg === '1').map(post => post.fields.fid),
+    ['abc', 'sub1', 'deep1'],
+  );
 });
 
 test('reports a folder page whose shape the adapter cannot read', async () => {

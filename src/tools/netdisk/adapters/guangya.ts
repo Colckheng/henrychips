@@ -7,6 +7,8 @@ const WEB_SITE = 'https://www.guangyapan.com';
 /** The web client of the platform is the only one that may list a share. */
 const CLIENT_ID = '0982a450-3342-3c45-9d05-b1c2bf72e0f6';
 const PAGE_SIZE = 100;
+/** How deep the folders of a share are walked, so a share that points into itself ends. */
+const MAX_DEPTH = 8;
 
 /**
  * The business answer of the platform, before it is looked at closely.
@@ -36,6 +38,8 @@ export type GuangYaAdapter = NetdiskAdapter & {
   /** Reads the business code of an answer, which the platform states as text. */
   businessCode(answer: GuangYaAnswer): number;
   request(context: AdapterContext, path: string, body: Record<string, unknown>): Promise<GuangYaAnswer>;
+  /** Reads a folder of the share and the folders in it. */
+  walk(context: AdapterContext, tokenValue: string, parentId: string, prefix: string, files: NetdiskFile[], depth: number, visited: Set<string>, seen: Set<string>): Promise<void>;
 };
 
 /**
@@ -51,6 +55,24 @@ function businessCode(answer: GuangYaAnswer): number {
   if (answer.success === false) return 1;
   if (typeof answer.error === 'string' && answer.error) return 1;
   return 0;
+}
+
+/**
+ * The cursor of the next page, read as a number.
+ *
+ * The platform states the cursor as a number, and a cursor that is sent back
+ * has to be a number as well: the platform refuses a cursor of text with a
+ * type error. A cursor that is missing or not a number means there is no
+ * next page to ask for.
+ */
+function cursorValue(answer: Record<string, unknown>): number | null {
+  const raw = answer.cursor ?? answer.nextCursor;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (typeof raw === 'string' && raw.trim()) {
+    const parsed = Number(raw.trim());
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
 }
 
 /**
@@ -167,14 +189,14 @@ export const guangyaAdapter: GuangYaAdapter = {
     if (Number.isFinite(total)) {
       // The cursor of the platform is the offset of the next page, so the
       // comparison is against the number of entries that were already sent.
-      const cursor = Number(answer.cursor ?? answer.nextCursor ?? Number.NaN);
-      const next = Number.isFinite(cursor) ? cursor : offset + pageSize;
+      const cursor = cursorValue(answer);
+      const next = cursor !== null ? cursor : offset + pageSize;
       return next < total;
     }
-    // Without a total the only sign left is a full page that came with a
-    // cursor for the next one.
-    const cursor = answer.cursor ?? answer.nextCursor;
-    return offset + pageSize >= 0 && pageSize > 0 && Boolean(cursor);
+    // Without a total the only sign left is a cursor for the next page. A
+    // cursor of zero is the start of the list, not a next page.
+    const cursor = cursorValue(answer);
+    return cursor !== null && cursor > 0;
   },
 
   parseEntries(data) {
@@ -223,27 +245,58 @@ export const guangyaAdapter: GuangYaAdapter = {
     if (!tokenValue) throw new ToolError('TOOL_FAILED', '光鸭云盘没有返回访问令牌，提取码可能不正确。');
 
     const files: NetdiskFile[] = [];
-    let offset = 0;
-    let cursor = '';
+    await this.walk(context, tokenValue, '', '', files, 0, new Set(), new Set());
+    return { title: title || '光鸭分享', files };
+  },
+
+  /**
+   * Reads a folder of the share and the folders in it.
+   *
+   * The list of a folder is asked for in the shape the platform expects:
+   * a page size with an order and a sort, and the cursor of the next page
+   * as a number. The old shape sent an offset and a limit instead, and the
+   * platform refused it with a parameter error. The depth is limited,
+   * because a share that points into itself would otherwise walk forever.
+   */
+  async walk(context, tokenValue, parentId, prefix, files, depth, visited, seen) {
+    if (depth > MAX_DEPTH) return;
+    // A folder that was already read is not read again, so a folder that
+    // points at itself ends the walk.
+    if (visited.has(parentId)) return;
+    visited.add(parentId);
+    const entries: NetdiskFile[] = [];
+    let cursor: number | null = null;
     for (let page = 0; page < 500; page++) {
       const answer = await this.request(context, '/userres/v1/get_share_page_files_list', {
-        shareId: context.shareId,
+        parentId,
+        pageSize: PAGE_SIZE,
+        orderBy: 0,
+        sortType: 0,
         accessToken: tokenValue,
-        parentId: '',
-        offset,
-        limit: PAGE_SIZE,
-        ...(cursor ? { cursor } : {}),
+        ...(cursor !== null ? { cursor } : {}),
       });
-      const entries = this.parseEntries(answer.data);
-      files.push(...entries);
+      const batch = this.parseEntries(answer.data);
+      entries.push(...batch);
       const data = (answer.data ?? {}) as Record<string, unknown>;
-      const next = typeof data.cursor === 'string' ? data.cursor : typeof data.nextCursor === 'string' ? data.nextCursor : '';
-      if (!this.hasMore(answer, offset, PAGE_SIZE) || !next || next === cursor) break;
+      const next = cursorValue(data);
+      // A page with no entries ends the folder, and a cursor that does not
+      // move ends it too: the platform answers a share it cannot list with
+      // the same cursor on every page.
+      if (!batch.length) break;
+      if (!this.hasMore(data, cursor ?? 0, PAGE_SIZE)) break;
+      if (next === null || next === cursor) break;
       cursor = next;
-      offset += entries.length;
-      if (!entries.length) break;
     }
-    return { title: title || '光鸭分享', files };
+    for (const entry of entries) {
+      if (seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      // The path of the entry carries the folders it is in.
+      const path = `${prefix}${entry.name}${entry.isDirectory ? '/' : ''}`;
+      files.push({ ...entry, path });
+      if (entry.isDirectory) {
+        await this.walk(context, tokenValue, entry.id, `${prefix}${entry.name}/`, files, depth + 1, visited, seen);
+      }
+    }
   },
 
   async link(context: AdapterContext, file: NetdiskFile): Promise<NetdiskLink> {

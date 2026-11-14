@@ -20,14 +20,20 @@ const LOCATE_DEVICE_ID = '348642637967375013';
 const LOCATE_PSIGN = '860a071f77c860e8cea06e4e54c518f3';
 /** The identifier of the device, which the platform ties to the session. */
 const LOCATE_DEVID = '0F1E9FC2E084472DA5A61C4CF4C759AF';
+/** How many entries one page of a folder holds. */
+const PAGE_SIZE = 100;
+/** How deep the folders of a share are walked, so a share that points into itself ends. */
+const MAX_DEPTH = 8;
+/** How many pages of one folder are read at most, so a folder that never ends ends. */
+const MAX_PAGES = 500;
 
 /**
  * The adapter of the baidu share link. The object holds the pure helpers
  * next to the protocol methods, so a helper can be tested without a network.
  */
 export type BaiduAdapter = NetdiskAdapter & {
-  /** Reads the entries of a share. */
-  parseEntries(data: unknown): NetdiskFile[];
+  /** Reads the entries of a share. The prefix is the folders above them. */
+  parseEntries(data: unknown, prefix?: string): NetdiskFile[];
   /** The code of the platform becomes a message of its own. */
   describeError(errno: number, message: string): string;
   /** Reads the name of a file out of the answer of the platform. */
@@ -36,6 +42,10 @@ export type BaiduAdapter = NetdiskAdapter & {
   pickPlainUrl(urls: unknown): string;
   /** Reads the share id and the owner out of the answer of the listing. */
   parseShareInfo(data: unknown): { shareId: string; uk: string };
+  /** Asks the platform for one page of a folder. */
+  requestPage(context: AdapterContext, surl: string, sekey: string, dir: string, page: number): Promise<NetdiskFile[]>;
+  /** Reads a folder of the share and the folders in it. */
+  walk(context: AdapterContext, surl: string, sekey: string, dir: string, prefix: string, files: NetdiskFile[], depth: number, visited: Set<string>, seen: Set<string>): Promise<void>;
 };
 
 /** The headers of a request, with the session of the user. */
@@ -62,6 +72,17 @@ function signIn(context: AdapterContext): void {
 }
 
 /**
+ * Puts the session of the user into the jar of the host when one is
+ * configured, and does nothing when there is none. The listing of a share
+ * works without a session, so the listing never refuses a visitor; only the
+ * transfer that fetches a direct link needs the session.
+ */
+function maybeSignIn(context: AdapterContext): void {
+  const bduss = context.credential?.bduss;
+  if (bduss) context.session.setCookie(SHARE_HOST, 'BDUSS', bduss);
+}
+
+/**
  * The token of the platform, which the requests to the personal drive need.
  * It is asked for with the session of the user and lives only for this run.
  */
@@ -83,9 +104,12 @@ async function bdstokenOf(context: AdapterContext): Promise<string> {
 export const baiduAdapter: BaiduAdapter = {
   platform: 'baidu',
   label: '百度网盘',
-  requiresCredential: true,
+  // The listing of a share works without a session, so the listing never
+  // asks for one. Only the transfer that fetches a direct link needs the
+  // session, and link() still refuses a visitor on its own.
+  requiresCredential: false,
 
-  parseEntries(data) {
+  parseEntries(data, prefix = '') {
     if (!data || typeof data !== 'object') return [];
     const root = data as Record<string, unknown>;
     const raw = Array.isArray(root.list) ? root.list : [];
@@ -98,16 +122,25 @@ export const baiduAdapter: BaiduAdapter = {
       const isDirectory = entry.isdir === '1' || entry.isdir === 1;
       // A folder is addressed by its path, a file by its id, because the
       // transfer of a file needs the id and the navigation of a folder the path.
-      const id = isDirectory ? (typeof entry.path === 'string' ? entry.path : '') : typeof entry.fs_id === 'string' ? entry.fs_id : '';
+      // The root answers its numbers as strings and a folder below it as
+      // real numbers, so both shapes are accepted; a file whose id is a
+      // number was dropped outright before this.
+      const id = isDirectory
+        ? (typeof entry.path === 'string' ? entry.path : '')
+        : typeof entry.fs_id === 'string' ? entry.fs_id
+        : typeof entry.fs_id === 'number' ? String(entry.fs_id) : '';
       if (!id) continue;
       const size = Number(entry.size ?? 0);
       files.push({
         id,
-        path: isDirectory ? `${name}/` : name,
+        // The path of the entry carries the folders it is in, so a file deep
+        // down still has the name the user knows it by.
+        path: `${prefix}${name}${isDirectory ? '/' : ''}`,
         name,
         sizeBytes: !isDirectory && Number.isFinite(size) && size > 0 ? size : null,
         isDirectory,
-        modifiedAt: typeof entry.server_mtime === 'string' ? entry.server_mtime : undefined,
+        modifiedAt: typeof entry.server_mtime === 'string' ? entry.server_mtime
+          : typeof entry.server_mtime === 'number' ? String(entry.server_mtime) : undefined,
       });
     }
     return files;
@@ -154,28 +187,12 @@ export const baiduAdapter: BaiduAdapter = {
     return chosen && typeof chosen.url === 'string' ? chosen.url : '';
   },
 
-  async list(context: AdapterContext): Promise<NetdiskShare> {
-    signIn(context);
-    // The short url of the platform is the share code without its first
-    // character, so the code of the link has to lose it as well.
-    const surl = context.shareId.startsWith('1') ? context.shareId.slice(1) : context.shareId;
-    let sekey = '';
-    if (context.code) {
-      const verify = await context.session.postJson(`https://pan.baidu.com/share/verify?surl=${surl}`, {
-        pwd: context.code, vcode: '', channel: 'chunlei', web: 1, app_id: APP_ID, clienttype: 0,
-      }, { ...headersOf(surl), 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' });
-      const verifyData = verify.data as Record<string, unknown> | undefined;
-      const errno = typeof verifyData?.errno === 'number' ? verifyData.errno : 0;
-      if (errno !== 0) {
-        throw new ToolError('INVALID_INPUT', this.describeError(errno, typeof verifyData?.errmsg === 'string' ? verifyData.errmsg : ''));
-      }
-      sekey = typeof verifyData?.randsk === 'string' ? verifyData.randsk : '';
-      // The listing of a folder needs the sign of the verification, and the
-      // platform only accepts it as a cookie.
-      if (sekey) context.session.setCookie(SHARE_HOST, 'BDCLND', sekey);
-    }
+  async requestPage(context, surl, sekey, dir, page) {
     const query = new URLSearchParams({
-      method: 'list', shorturl: surl, page: '1', num: '100', root: '1', dir: '/',
+      method: 'list', shorturl: surl, page: String(page), num: String(PAGE_SIZE),
+      // The root of the share is asked for as the root; a folder below it is
+      // asked for by its path.
+      root: dir === '/' ? '1' : '0', dir,
     });
     if (sekey) query.set('sekey', sekey);
     const response = await context.session.get(
@@ -187,7 +204,81 @@ export const baiduAdapter: BaiduAdapter = {
     if (errno !== 0) {
       throw new ToolError('TOOL_FAILED', this.describeError(errno, typeof answer.errmsg === 'string' ? answer.errmsg : ''));
     }
-    return { title: '百度网盘分享', files: this.parseEntries(answer) };
+    return this.parseEntries(answer);
+  },
+
+  /**
+   * Reads a folder of the share and the folders in it.
+   *
+   * The depth is limited, because a share that points into itself would
+   * otherwise walk forever.
+   */
+  async walk(context, surl, sekey, dir, prefix, files, depth, visited, seen) {
+    if (depth > MAX_DEPTH) return;
+    // A folder that was already read is not read again, so a folder that
+    // points at itself ends the walk.
+    if (visited.has(dir)) return;
+    visited.add(dir);
+    const entries: NetdiskFile[] = [];
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      context.reportProgress(`读取目录第 ${page} 页`);
+      const batch = await this.requestPage(context, surl, sekey, dir, page);
+      entries.push(...batch);
+      // A page that is not full is the last one of the folder.
+      if (batch.length < PAGE_SIZE) break;
+    }
+    for (const entry of entries) {
+      if (seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      // The path of the entry carries the folders it is in.
+      const path = `${prefix}${entry.name}${entry.isDirectory ? '/' : ''}`;
+      files.push({ ...entry, path });
+      if (entry.isDirectory) {
+        // A folder is addressed by its path, which is what the entry
+        // carries as its id.
+        await this.walk(context, surl, sekey, entry.id, `${prefix}${entry.name}/`, files, depth + 1, visited, seen);
+      }
+    }
+  },
+
+  async list(context: AdapterContext): Promise<NetdiskShare> {
+    // The listing works without a session, so a session is only put into the
+    // jar when one is configured. The transfer that fetches a direct link
+    // still asks for it in link().
+    maybeSignIn(context);
+    // The short url of the platform is the share code without its first
+    // character, so the code of the link has to lose it as well.
+    const surl = context.shareId.startsWith('1') ? context.shareId.slice(1) : context.shareId;
+    let sekey = '';
+    if (context.code) {
+      // The verification is a form post: the platform refuses the same
+      // fields sent as JSON (errno -12), so postForm is used on purpose.
+      const verify = await context.session.postForm(`https://pan.baidu.com/share/verify?surl=${surl}`, {
+        pwd: context.code, vcode: '', channel: 'chunlei', web: '1', app_id: APP_ID, clienttype: '0',
+      }, { ...headersOf(surl), 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' });
+      const verifyData = verify.data as Record<string, unknown> | undefined;
+      const errno = typeof verifyData?.errno === 'number' ? verifyData.errno : 0;
+      if (errno !== 0) {
+        throw new ToolError('INVALID_INPUT', this.describeError(errno, typeof verifyData?.errmsg === 'string' ? verifyData.errmsg : ''));
+      }
+      // The token is used exactly as returned: it is URL-encoded, and the
+      // platform wants that form in both the query string and the cookie.
+      // Decoding it once first makes every listing fail with errno -9.
+      sekey = typeof verifyData?.randsk === 'string' ? verifyData.randsk : '';
+      // The listing of a folder needs the sign of the verification, and the
+      // platform only accepts it as a cookie.
+      if (sekey) context.session.setCookie(SHARE_HOST, 'BDCLND', sekey);
+    }
+    // A share holds folders, and a folder holds more of them, so the walk
+    // goes into every folder. A folder that is already visited is not
+    // visited again, and an entry that is already listed is not listed
+    // again, so a folder that points at itself does not walk forever or
+    // fill the list with copies of itself.
+    const files: NetdiskFile[] = [];
+    const visited = new Set<string>();
+    const seen = new Set<string>();
+    await this.walk(context, surl, sekey, '/', '', files, 0, visited, seen);
+    return { title: '百度网盘分享', files };
   },
 
   async link(context: AdapterContext, file: NetdiskFile): Promise<NetdiskLink> {

@@ -9,6 +9,8 @@ const SHARE_HOST = 'https://115cdn.com';
 const REFERER = 'https://115.com/';
 const ROOT_CID = '0';
 const PAGE_SIZE = 100;
+/** How deep the folders of a share are walked, so a share that points into itself ends. */
+const MAX_DEPTH = 8;
 
 /** The answer of the platform, before it is looked at closely. */
 interface Pan115Answer {
@@ -53,6 +55,12 @@ export type Pan115Adapter = NetdiskAdapter & {
   shareReferer(shareCode: string, receiveCode: string | null): string;
   /** The client user agent, which is the only one that is given a link. */
   clientUserAgent(version: string): string;
+  /** Reads one folder of the share, paging through it, with its title. */
+  readFolder(context: AdapterContext, referer: string, cid: string): Promise<{ entries: NetdiskFile[]; title: string }>;
+  /** Reads a folder of the share and the folders in it. */
+  walk(context: AdapterContext, referer: string, cid: string, prefix: string, files: NetdiskFile[], depth: number, visited: Set<string>, seen: Set<string>): Promise<void>;
+  /** Whether an answer of the platform says the login has timed out. */
+  isLoginError(answer: Pan115Answer): boolean;
 };
 
 /** The headers of a share request. */
@@ -159,17 +167,15 @@ export const pan115Adapter: Pan115Adapter = {
     return `Mozilla/5.0 115Browser/${version}`;
   },
 
-  async list(context: AdapterContext): Promise<NetdiskShare> {
-    const referer = this.shareReferer(context.shareId, context.code);
+  async readFolder(context, referer, cid) {
     const files: NetdiskFile[] = [];
-    let sharerId = '';
-    let shareTitle = '';
+    let title = '';
     let offset = 0;
     for (let page = 0; page < 500; page++) {
       const query = new URLSearchParams({
         share_code: context.shareId,
         receive_code: context.code ?? '',
-        cid: ROOT_CID,
+        cid,
         offset: String(offset),
         limit: String(PAGE_SIZE),
         format: 'json',
@@ -181,10 +187,9 @@ export const pan115Adapter: Pan115Adapter = {
         throw new ToolError('TOOL_FAILED', this.describeError(answer));
       }
       const data = answer.data && typeof answer.data === 'object' ? answer.data as Record<string, unknown> : {};
-      sharerId = this.parseSharerId(data) || sharerId;
       const shareInfo = data.shareinfo && typeof data.shareinfo === 'object' ? data.shareinfo as Record<string, unknown> : {};
-      const title = typeof shareInfo.share_title === 'string' ? shareInfo.share_title : '';
-      if (title) shareTitle = title;
+      const found = typeof shareInfo.share_title === 'string' ? shareInfo.share_title : '';
+      if (found) title = found;
       const entries = this.parseEntries(data);
       files.push(...entries);
       const total = Number(data.count ?? Number.NaN);
@@ -192,7 +197,65 @@ export const pan115Adapter: Pan115Adapter = {
       if (Number.isFinite(total) && files.length >= total) break;
       offset += entries.length;
     }
-    return { title: shareTitle || '115 分享', files };
+    return { entries: files, title };
+  },
+
+  /**
+   * Reads a folder of the share and the folders in it.
+   *
+   * The depth is limited, because a share that points into itself would
+   * otherwise walk forever.
+   */
+  async walk(context, referer, cid, prefix, files, depth, visited, seen) {
+    if (depth > MAX_DEPTH) return;
+    // A folder that was already read is not read again, so a folder that
+    // points at itself ends the walk.
+    if (visited.has(cid)) return;
+    visited.add(cid);
+    const { entries } = await this.readFolder(context, referer, cid);
+    for (const entry of entries) {
+      if (seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      // The path of the entry carries the folders it is in.
+      const path = `${prefix}${entry.name}${entry.isDirectory ? '/' : ''}`;
+      files.push({ ...entry, path });
+      if (entry.isDirectory) {
+        await this.walk(context, referer, entry.id, `${prefix}${entry.name}/`, files, depth + 1, visited, seen);
+      }
+    }
+  },
+
+  async list(context: AdapterContext): Promise<NetdiskShare> {
+    const referer = this.shareReferer(context.shareId, context.code);
+    const root = await this.readFolder(context, referer, ROOT_CID);
+    const files: NetdiskFile[] = [];
+    // A folder that is already visited is not visited again, so a folder that
+    // points at itself does not walk forever.
+    const visited = new Set<string>([ROOT_CID]);
+    // An entry that is already listed is not listed again, so a folder that
+    // points at itself does not fill the list with copies of itself.
+    const seen = new Set<string>();
+    for (const entry of root.entries) {
+      if (seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      const path = `${entry.name}${entry.isDirectory ? '/' : ''}`;
+      files.push({ ...entry, path });
+      if (entry.isDirectory) {
+        await this.walk(context, referer, entry.id, `${entry.name}/`, files, 1, visited, seen);
+      }
+    }
+    return { title: root.title || '115 分享', files };
+  },
+
+  isLoginError(answer) {
+    const code = typeof answer.code === 'number' ? answer.code : Number.NaN;
+    if (code === 990001) return true;
+    // The platform answers a timed-out login without a code, so the words
+    // of the answer have to be read as well.
+    for (const field of [answer.error, answer.msg, answer.message]) {
+      if (typeof field === 'string' && field.includes('登录')) return true;
+    }
+    return false;
   },
 
   async link(context: AdapterContext, file: NetdiskFile): Promise<NetdiskLink> {
@@ -227,7 +290,14 @@ export const pan115Adapter: Pan115Adapter = {
     );
     const answer = (response.data ?? {}) as Pan115Answer;
     if (answer.state === false) {
-      throw new ToolError('TOOL_FAILED', this.describeError(answer));
+      const message = this.describeError(answer);
+      // Listing a share needs no login, but a link does, so a timed-out
+      // login says so plainly instead of leaving the user with the words
+      // of the platform alone.
+      if (this.isLoginError(answer)) {
+        throw new ToolError('ACCESS_DENIED', `取直链需要登录 115 账号，请先配置凭证（列目录不需要登录）。平台原话：${message}`);
+      }
+      throw new ToolError('TOOL_FAILED', message);
     }
     const url = this.pickDownloadUrl(answer.data);
     if (!url) throw new ToolError('TOOL_FAILED', '115 网盘没有返回下载地址。');
