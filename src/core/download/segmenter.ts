@@ -251,7 +251,10 @@ export async function downloadSegmented(link: NetdiskLink, options: SegmenterOpt
       // The socket has to be released, otherwise the answer of the server
       // keeps the connection open.
       response.body.destroy();
-      throw error;
+      // A broken connection is a fault of the network, not of the segment,
+      // so the segment is asked again from the byte it stopped at.
+      if (error instanceof ToolError) throw error;
+      throw new ToolError('NETWORK_ERROR', '连接中断，将从断点继续。');
     }
     if (count < segment.end - segment.start + 1) {
       // The last segment may be shorter than the platform announced, when the

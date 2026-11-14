@@ -199,7 +199,7 @@ test('names a path of a folder instead of asking the platform for a link of it',
   }
 });
 
-test('refuses the request instead of dropping the files that are over the limit', async () => {
+test('lists the files instead of dropping the ones that are over the limit', async () => {
   const restore = registerStub({
     platform: 'quark',
     label: '夸克网盘',
@@ -209,13 +209,16 @@ test('refuses the request instead of dropping the files that are over the limit'
   });
   const stateDirectory = await stateDirectoryOf();
   try {
-    await assert.rejects(
-      () => netdiskShareTool.invoke(
-        { url: 'https://pan.quark.cn/s/abc123', maxLinks: 10 },
-        contextOf(stateDirectory),
-      ),
-      { code: 'LIMIT_EXCEEDED' },
+    const result = await netdiskShareTool.invoke(
+      { url: 'https://pan.quark.cn/s/abc123', maxLinks: 10 },
+      contextOf(stateDirectory),
     );
+    // The files are all there, so the user can pick the ones they want.
+    assert.equal((result.files as unknown[]).length, 12);
+    assert.equal((result.links as unknown[]).length, 0);
+    // The warning says why there are no links and what to do about it.
+    const warnings = result.warnings as string[];
+    assert.ok(warnings.some(warning => warning.includes('12') && warning.includes('勾选')));
   } finally {
     restore();
     await rm(stateDirectory, { recursive: true, force: true });

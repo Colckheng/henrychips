@@ -96,7 +96,7 @@ export const netdiskShareTool = defineTool({
         .filter(([key]) => key !== 'ilanzou')
         .map(([key, label]) => ({ label, value: key })),
     ] },
-    { name: 'mode', label: '解析深度', type: 'select', description: '只列文件更快；取直链会对每个文件额外发请求。', options: [
+    { name: 'mode', label: '解析深度', type: 'select', description: '只列文件更快；取直链会对每个文件额外发请求。大分享建议先「只列出文件」，勾选后再取。', options: [
       { label: '列出文件并取直链', value: 'link' },
       { label: '只列出文件', value: 'list' },
     ] },
@@ -220,10 +220,15 @@ export const netdiskShareTool = defineTool({
     // A download always needs the link of the file, so the depth does not
     // matter then.
     const toLink = requested.length ? wanted : files.filter(file => !file.isDirectory);
-    if (mode === 'link' && toLink.length > maxLinks) {
-      throw new ToolError('LIMIT_EXCEEDED', `可取直链的文件有 ${toLink.length} 个，超过本次上限 ${maxLinks} 个，请调高 maxLinks 或改用 paths 精确指定。`);
+    // A share may hold more files than the caller asked links for. Refusing
+    // the whole request would leave the user with nothing, so the files are
+    // listed and the links are left for a second round, which names the
+    // files it wants.
+    const overLimit = mode === 'link' && toLink.length > maxLinks;
+    if (overLimit) {
+      warnings.push(`分享里有 ${toLink.length} 个文件，超过一次取 ${maxLinks} 条直链的上限，所以这次只列出文件。勾选要的文件后再次运行即可取到它们的直链。`);
     }
-    const askLinks = mode === 'link' || requested.length > 0;
+    const askLinks = (mode === 'link' && !overLimit) || requested.length > 0;
     if (askLinks) {
       for (const [index, file] of toLink.entries()) {
         ctx.reportProgress?.({ phase: `取直链 ${index + 1}/${toLink.length}` });

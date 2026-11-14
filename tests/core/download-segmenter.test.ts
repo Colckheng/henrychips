@@ -291,3 +291,43 @@ test('tries a segment again when the connection breaks halfway', async t => {
   assert.equal(result.bytesWritten, payload.length);
   assert.equal((await readFile(path.join(directory, 'a.bin'))).toString(), '0123456789');
 });
+
+test('a broken connection is tried again instead of failing the download', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'workstation-segment-broken-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const payload = Buffer.from('0123456789');
+  let calls = 0;
+  const http = {
+    getRaw: async () => ({
+      finalUrl: '', status: 206, contentType: 'application/octet-stream',
+      bytes: new Uint8Array(), setCookie: [], headers: { 'content-range': `bytes 0-0/${payload.length}` },
+    }),
+    getStream: async (url: string, _signal: AbortSignal, options?: { headers?: Record<string, string> }) => {
+      calls++;
+      const range = options?.headers?.Range ?? '';
+      const matched = /bytes=(\d+)-(\d*)/.exec(range);
+      const start = Number(matched?.[1] ?? 0);
+      const end = matched?.[2] ? Number(matched[2]) : payload.length - 1;
+      // The first answer breaks the connection in the middle of the segment.
+      const body = calls === 1
+        ? Readable.from((async function* () {
+            yield payload.subarray(start, start + 2);
+            throw Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+          })())
+        : Readable.from([payload.subarray(start, end + 1)]);
+      return {
+        finalUrl: url, status: 206, contentType: 'application/octet-stream',
+        contentLength: end - start + 1, body,
+        headers: { 'content-range': `bytes ${start}-${end}/${payload.length}` },
+      };
+    },
+  } as unknown as PublicHttp;
+  const writer = createFileWriter(directory, new AbortController().signal, 1_048_576);
+  const result = await downloadSegmented(linkOf(), {
+    http, writer, signal: new AbortController().signal, outputPath: 'a.bin', connections: 1,
+  });
+  // The broken connection is asked again from the byte it stopped at.
+  assert.equal(calls, 2);
+  assert.equal(result.bytesWritten, payload.length);
+  assert.equal((await readFile(path.join(directory, 'a.bin'))).toString(), '0123456789');
+});
