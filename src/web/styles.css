@@ -333,6 +333,10 @@ code, pre { font-family: var(--font-mono); }
 .netdisk-picker-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; font-size: var(--text-xs); }
 .netdisk-picker-size { flex: none; color: var(--muted); font-family: var(--font-mono); font-size: var(--text-xs); }
 .netdisk-picker-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.netdisk-picker-search { margin-bottom: var(--space-3); }
+.netdisk-picker-search input { width: 100%; padding: var(--space-2) var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: inherit; font: inherit; font-size: var(--text-xs); }
+.netdisk-picker-search input:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.netdisk-picker-path { display: block; color: var(--muted); font-size: 10px; margin-top: 2px; overflow-wrap: anywhere; }
 .table-scroll { max-width: 100%; min-width: 0; overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); scrollbar-color: var(--border-strong) transparent; }
 table { width: 100%; border-collapse: collapse; font-size: var(--text-xs); text-align: left; }
 th { font-weight: 500; color: var(--muted-strong); background: var(--surface-soft); white-space: nowrap; }

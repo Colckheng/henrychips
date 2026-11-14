@@ -6,6 +6,9 @@ import { CopyButton } from './CopyButton.js';
 import { DataTable, valueText } from './ResultData.js';
 
 interface NetdiskFile { path: string; name: string; sizeBytes: number | null; isDirectory: boolean; modifiedAt?: string }
+
+/** How many files are drawn at once. A share may hold thousands of them. */
+const PAGE_SIZE = 200;
 interface NetdiskLink { path: string; name: string; sizeBytes: number | null; url: string; headers?: Record<string, string>; rangeSupported?: boolean | null; note?: string }
 
 /**
@@ -37,11 +40,14 @@ export function downloadableFiles(files: NetdiskFile[]): NetdiskFile[] {
 }
 
 /**
- * The files that are picked. Before the user touches anything, every file is
- * picked, because the usual case is to download the whole share.
+ * The files that are picked.
+ *
+ * Nothing is picked before the user chooses, because a share may hold
+ * thousands of files and picking all of them by accident would start a
+ * download nobody asked for.
  */
-export function pickedPaths(files: NetdiskFile[], picked: string[] | null): string[] {
-  if (picked === null) return downloadableFiles(files).map(file => file.path);
+export function pickedPaths(picked: string[] | null): string[] {
+  if (picked === null) return [];
   return picked;
 }
 
@@ -51,17 +57,27 @@ export function NetdiskResult({ data, onDownload }: { data: Record<string, unkno
   const failures = Array.isArray(data.linkFailures) ? data.linkFailures.filter(isRecord) : [];
   const downloadable = downloadableFiles(files);
   const [selected, setSelected] = useState<string[] | null>(null);
+  const [query, setQuery] = useState('');
   // A new result holds other files, so the earlier choice does not apply to it.
-  useEffect(() => { setSelected(null); }, [data]);
+  useEffect(() => { setSelected(null); setQuery(''); }, [data]);
   function toggle(path: string) {
     setSelected(previous => {
-      const current = previous ?? downloadable.map(file => file.path);
+      const current = previous ?? [];
       return current.includes(path) ? current.filter(item => item !== path) : [...current, path];
     });
   }
-  const chosen = pickedPaths(files, selected);
+  const chosen = pickedPaths(selected);
   function selectAll() { setSelected(downloadable.map(file => file.path)); }
   function selectNone() { setSelected([]); }
+  // A share may hold thousands of files. Drawing a box for each of them
+  // makes the page unusable, so only a page of them is drawn and the rest is
+  // found with the search box.
+  const needle = query.trim().toLowerCase();
+  const matched = needle
+    ? downloadable.filter(file => file.name.toLowerCase().includes(needle) || file.path.toLowerCase().includes(needle))
+    : downloadable;
+  const shown = matched.slice(0, PAGE_SIZE);
+  const hidden = matched.length - shown.length;
   const rows: ReactNode[][] = links.map(link => [
     valueText(link.name),
     formatNumber(link.sizeBytes),
@@ -75,17 +91,23 @@ export function NetdiskResult({ data, onDownload }: { data: Record<string, unkno
   ]);
   return <div className="result-sections">
     <section><div className="result-section-heading"><h3>分享文件</h3><span>{files.length} 项</span></div>
-      <DataTable label="分享文件列表" headers={['名称', '大小（字节）', '路径', '修改时间']} rows={files.map(file => [
+      <DataTable label="分享文件列表" headers={['名称', '大小（字节）', '路径', '修改时间']} rows={files.slice(0, PAGE_SIZE).map(file => [
         valueText(file.name), formatNumber(file.sizeBytes), valueText(file.path), valueText(file.modifiedAt),
       ])} />
+      {files.length > PAGE_SIZE && <p className="inline-note">这里只列出前 {PAGE_SIZE} 项，共 {files.length} 项；下面的搜索框可以找到需要的文件。</p>}
     </section>
     {downloadable.length > 0 && onDownload && <section><div className="result-section-heading"><h3>选择要下载的文件</h3><span>已选 {chosen.length} / {downloadable.length}</span></div>
-      <ul className="netdisk-picker">{downloadable.map(file => <li key={file.path}>
+      <div className="netdisk-picker-search">
+        <input type="search" value={query} placeholder="按文件名或路径查找" aria-label="查找要下载的文件"
+          onChange={event => setQuery(event.target.value)} />
+      </div>
+      <ul className="netdisk-picker">{shown.map(file => <li key={file.path}>
         <label className="netdisk-picker-item">
           <input type="checkbox" checked={chosen.includes(file.path)} onChange={() => toggle(file.path)} />
-          <span className="netdisk-picker-name">{valueText(file.name)}</span>
+          <span className="netdisk-picker-name">{valueText(file.name)}<code className="netdisk-picker-path">{valueText(file.path)}</code></span>
           <span className="netdisk-picker-size">{formatNumber(file.sizeBytes)}</span>
         </label></li>)}</ul>
+      {hidden > 0 && <p className="inline-note">还有 {hidden} 个文件没有显示，用上面的搜索框缩小范围。</p>}
       <div className="netdisk-picker-actions">
         <button type="button" className="button button-primary button-small" disabled={!chosen.length}
           onClick={() => onDownload(chosen)}>下载选中的 {chosen.length} 个文件</button>

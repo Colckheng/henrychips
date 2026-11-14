@@ -152,16 +152,13 @@ test('a folder is not offered for download', () => {
   assert.equal(downloadable[0]?.path, 'a.bin');
 });
 
-test('every file is picked before the user chooses', () => {
-  const files = [
-    { path: 'a.bin', name: 'a.bin', sizeBytes: 10, isDirectory: false },
-    { path: 'b.bin', name: 'b.bin', sizeBytes: 20, isDirectory: false },
-  ];
-  // The usual case is to download the whole share, so nothing is picked by hand.
-  assert.deepEqual(pickedPaths(files, null), ['a.bin', 'b.bin']);
+test('nothing is picked before the user chooses', () => {
+  // A share may hold thousands of files, so picking all of them by accident
+  // would start a download nobody asked for.
+  assert.deepEqual(pickedPaths(null), []);
   // Once the user chooses, only the chosen ones are downloaded.
-  assert.deepEqual(pickedPaths(files, ['b.bin']), ['b.bin']);
-  assert.deepEqual(pickedPaths(files, []), []);
+  assert.deepEqual(pickedPaths(['b.bin']), ['b.bin']);
+  assert.deepEqual(pickedPaths([]), []);
 });
 
 test('the picker offers the files of the share', () => {
@@ -181,8 +178,9 @@ test('the picker offers the files of the share', () => {
   assert.match(html, /选择要下载的文件/);
   assert.match(html, /a\.bin/);
   assert.match(html, /b\.bin/);
-  assert.match(html, /已选/);
-  assert.match(html, /下载选中的 2 个文件/);
+  // Nothing is picked before the user chooses, so the button waits for them.
+  assert.match(html, /已选 0 \/ 2/);
+  assert.match(html, /下载选中的 0 个文件/);
 });
 
 test('no picker is shown when the share holds no file', () => {
@@ -197,4 +195,25 @@ test('no picker is shown when the share holds no file', () => {
   }));
   // A folder has no file of its own, so there is nothing to pick.
   assert.equal(html.includes('选择要下载的文件'), false);
+});
+
+test('only a page of the files is drawn, so a big share does not freeze the page', () => {
+  const files = Array.from({ length: 600 }, (_, index) => ({
+    path: `dir/file-${index}.bin`, name: `file-${index}.bin`, sizeBytes: 100, isDirectory: false,
+  }));
+  const html = renderToStaticMarkup(createElement(NetdiskResult, {
+    data: {
+      platform: 'quark', platformLabel: '夸克网盘', shareId: 'abc', title: '示例',
+      fileCount: files.length, totalBytes: 60000,
+      files, links: [], linkFailures: [], credentialUsed: false, warnings: [],
+    },
+    onDownload: () => {},
+  }));
+  // The count tells how many files the share holds, even though only a page
+  // of them is drawn.
+  assert.match(html, /已选 0 \/ 600/);
+  assert.equal((html.match(/type="checkbox"/g) ?? []).length, 200);
+  // The rest is found with the search box.
+  assert.match(html, /还有 400 个文件没有显示/);
+  assert.match(html, /按文件名或路径查找/);
 });
