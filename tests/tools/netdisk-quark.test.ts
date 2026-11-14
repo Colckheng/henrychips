@@ -218,6 +218,7 @@ test('lists the files of a share the way the web client of the platform does', a
 test('takes the guest token into the jar of the host and into the link', async () => {
   const { http, recorded } = fakeHttp({
     '/1/clouddrive/share/sharepage/token': { data: tokenAnswer },
+    '/1/clouddrive/share/sharepage/detail': { data: detailAnswer },
     '/1/clouddrive/file/download': { data: downloadAnswer },
     '/file/demo.bin': {
       status: 206,
@@ -262,6 +263,7 @@ test('takes the guest token out of the cookies of the answer', async () => {
   // at all, so a token read from the body would always be empty.
   const { http } = fakeHttp({
     '/1/clouddrive/share/sharepage/token': { data: tokenAnswer },
+    '/1/clouddrive/share/sharepage/detail': { data: detailAnswer },
     '/1/clouddrive/file/download': {
       data: { status: 200, code: 0, data: [{ download_url: CDN_URL, file_name: 'demo.bin', size: 1048576 }] },
       setCookie: [`__pugs=${GUEST_TOKEN}; Path=/`],
@@ -278,6 +280,7 @@ test('takes the guest token out of the cookies of the answer', async () => {
 
 test('takes the range conclusion from the probe instead of assuming it', async () => {  const { http } = fakeHttp({
     '/1/clouddrive/share/sharepage/token': { data: tokenAnswer },
+    '/1/clouddrive/share/sharepage/detail': { data: detailAnswer },
     '/1/clouddrive/file/download': { data: downloadAnswer },
     // A plain answer without a range header must not claim a resuming.
     '/file/demo.bin': { status: 200, headers: {} },
@@ -289,6 +292,7 @@ test('takes the range conclusion from the probe instead of assuming it', async (
 test('reports a download that the CDN refuses instead of handing it out', async () => {
   const { http } = fakeHttp({
     '/1/clouddrive/share/sharepage/token': { data: tokenAnswer },
+    '/1/clouddrive/share/sharepage/detail': { data: detailAnswer },
     '/1/clouddrive/file/download': { data: downloadAnswer },
     // The CDN answers 412 when the guest token does not reach it.
     '/file/demo.bin': { status: 412 },
@@ -303,6 +307,7 @@ test('reports a download answer without a guest token instead of handing it out'
   const { http } = fakeHttp({
     '/1/clouddrive/share/sharepage/token': { data: tokenAnswer },
     // The answer holds no guest token, so the CDN refuses the file.
+    '/1/clouddrive/share/sharepage/detail': { data: detailAnswer },
     '/1/clouddrive/file/download': { data: { status: 200, code: 0, data: [{ download_url: CDN_URL, file_name: 'demo.bin', size: 1048576 }] } },
     '/file/demo.bin': { status: 412 },
   });
@@ -315,6 +320,7 @@ test('reports a download answer without a guest token instead of handing it out'
 test('reports a page of the platform instead of handing it out as a link', async () => {
   const { http } = fakeHttp({
     '/1/clouddrive/share/sharepage/token': { data: tokenAnswer },
+    '/1/clouddrive/share/sharepage/detail': { data: detailAnswer },
     '/1/clouddrive/file/download': { data: downloadAnswer },
     '/file/demo.bin': { status: 200, contentType: 'text/html; charset=utf-8' },
   });
@@ -327,6 +333,7 @@ test('reports a page of the platform instead of handing it out as a link', async
 test('reports the guest limit when the platform refuses the download', async () => {
   const { http } = fakeHttp({
     '/1/clouddrive/share/sharepage/token': { data: tokenAnswer },
+    '/1/clouddrive/share/sharepage/detail': { data: detailAnswer },
     '/1/clouddrive/file/download': { data: { status: 200, code: 23018, message: '文件大小超过限制' } },
   });
   await assert.rejects(
@@ -430,8 +437,12 @@ test('lists the share from the root of the platform when the stated root is refu
     getJson: async (url, _signal, _options) => {
       const query = new URL(url).searchParams;
       parents.push(query.get('pdir_fid') ?? '');
-      // Only the root of the platform answers with the list of the members.
-      if (query.get('pdir_fid') !== '0') throw new ToolError('TOOL_FAILED', '根目录不存在');
+      // The stated root of the share is refused, and only the root of the
+      // platform answers with the list of the members.
+      if (query.get('pdir_fid') === '987654321') throw new ToolError('TOOL_FAILED', '根目录不存在');
+      if (query.get('pdir_fid') !== '0') {
+        return { finalUrl: url, status: 200, data: { status: 200, code: 0, data: { list: [], total: 0 } } };
+      }
       return {
         finalUrl: url,
         status: 200,
@@ -449,6 +460,7 @@ test('lists the share from the root of the platform when the stated root is refu
   };
   const share = await quarkAdapter.list(contextOf(http));
   assert.equal(share.files.length, 2);
-  assert.deepEqual(parents, ['987654321', '0']);
+  // The stated root is asked for first, and the root of the platform after it.
+  assert.deepEqual(parents.slice(0, 2), ['987654321', '0']);
 });
 

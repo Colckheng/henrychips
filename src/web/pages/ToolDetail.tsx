@@ -4,7 +4,6 @@ import type { ToolDescription } from '../../contracts/tool.js';
 import { useApi } from '../api.js';
 import { initialValues, propertiesOf, requiredFields, serializeInput } from '../form.js';
 import { categories, capabilityLabels } from '../presentation.js';
-import { startRun } from '../run-store.js';
 import { useToolRun } from '../useToolRun.js';
 import { ErrorNotice, Loading } from '../components/Feedback.js';
 import { FormField } from '../components/FormField.js';
@@ -32,18 +31,15 @@ function ToolWorkbench({ tool, example }: { tool: ToolDescription; example: bool
     void execution.run(serializeInput(tool, values));
   }
   /**
-   * Hands the files the user picked over to the download tool. The share link
-   * is taken from the form, because it is the very link the listing came
-   * from, and the picked paths decide what is downloaded.
+   * Starts the download of the files the user picked. The paths go into the
+   * form and the tool runs again, so the share link is the very one the
+   * listing came from.
    */
   function downloadPicked(paths: string[]) {
-    const url = typeof values.url === 'string' ? values.url : '';
-    if (!url) { setFormNote('缺少分享链接，无法开始下载。'); return; }
-    const input: Record<string, unknown> = { url, paths };
-    const code = typeof values.code === 'string' ? values.code.trim() : '';
-    if (code) input.code = code;
-    startRun('netdisk_download', input);
-    setFormNote(`已把 ${paths.length} 个文件交给下载工具，任务在后台进行。`);
+    setValues(previous => ({ ...previous, paths: paths.join('\n') }));
+    setFormNote(`已选中 ${paths.length} 个文件，正在开始下载。`);
+    // The run needs the paths, so it waits for the form to hold them.
+    setTimeout(() => form.current?.requestSubmit(), 0);
   }
   return <div className="page detail-page">
     <a className="back-link" href="#/tools"><ArrowLeft size={15} aria-hidden="true" />返回工具箱</a>
@@ -67,7 +63,7 @@ function ToolWorkbench({ tool, example }: { tool: ToolDescription; example: bool
       </form>
     </section><aside className="capability-note"><ShieldCheck size={19} aria-hidden="true" /><div><h3>本次工具能力</h3><p>{tool.capabilities.length ? tool.capabilities.map(capability => capabilityLabels[capability] ?? capability).join(' · ') : '无需访问文件、网络或外部进程。'}</p>{tool.fields.some(field => field.type === 'relative-path') && <small>文件路径以已配置的本地工作区为起点。</small>}</div></aside></div>
       <ResultPanel tool={tool.name} result={execution.result} status={execution.status} error={execution.error} retry={retry} progress={execution.progress} restored={execution.restored} onRestore={execution.hasPrevious ? execution.restore : undefined}
-        onDownload={tool.name === 'netdisk_resolve' ? downloadPicked : undefined} />
+        onDownload={tool.name === 'netdisk_share' ? downloadPicked : undefined} />
     </div>
   </div>;
 }

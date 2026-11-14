@@ -13,6 +13,12 @@ const GUEST_COOKIE = '__pugs';
 const CODE_GUEST_LIMIT = 23018;
 /** The business code that says the session of the platform is not valid anymore. */
 const CODE_LOGIN_REQUIRED = 31001;
+/** How deep the folders of a share are walked, so a share that points into itself ends. */
+const MAX_DEPTH = 8;
+/** How often a token that the platform refuses is replaced by a new one. */
+const TOKEN_ATTEMPTS = 3;
+/** The business code that says the token of the share is not accepted. */
+const CODE_INVALID_TOKEN = 14001;
 
 /** The token of a share, as the platform hands it out. */
 export interface QuarkShareToken {
@@ -47,10 +53,20 @@ export type QuarkAdapter = NetdiskAdapter & {
   request(context: AdapterContext, url: string, body?: unknown): Promise<Record<string, unknown>>;
   /** Asks the platform for the token of the share. */
   requestToken(context: AdapterContext): Promise<QuarkShareToken>;
+  /** Does the work with a token of the share, and with a new one when the platform refuses it. */
+  withUsableToken<T>(context: AdapterContext, work: (token: QuarkShareToken) => Promise<T>): Promise<T>;
   /** Asks the platform for one page of a folder. */
   requestPage(context: AdapterContext, stoken: string, parent: string, page: number): Promise<NetdiskFile[]>;
   /** Reads the root of the share, with the parent the platform accepted. */
   readRoot(context: AdapterContext, token: QuarkShareToken): Promise<{ parent: string; entries: NetdiskFile[] }>;
+  /** Reads a folder of the share and the folders in it. */
+  walk(context: AdapterContext, token: QuarkShareToken, parent: string, prefix: string, files: NetdiskFile[], depth: number, visited: Set<string>, seen: Set<string>): Promise<void>;
+  /** Takes the address of a file with a token of the share. */
+  linkWithToken(context: AdapterContext, token: QuarkShareToken, file: NetdiskFile): Promise<NetdiskLink>;
+  /** Reads every file of the share. */
+  readShare(context: AdapterContext, token: QuarkShareToken): Promise<NetdiskFile[]>;
+  /** Finds a member of the share by its path, without reading the whole share. */
+  findByPath(context: AdapterContext, token: QuarkShareToken, path: string): Promise<NetdiskFile | null>;
   /** Finds a member of the share again, for a link that is fetched twice. */
   findEntry(context: AdapterContext, token: QuarkShareToken, file: NetdiskFile): Promise<NetdiskFile | null>;
 };
@@ -106,7 +122,23 @@ function describeErrorOf(code: number, message: string): string {
   if (code === CODE_LOGIN_REQUIRED) {
     return '夸克网盘的会话已经失效，请登录夸克账号后重试。';
   }
+  if (code === CODE_INVALID_TOKEN) {
+    return '夸克网盘没有接受这个分享令牌。';
+  }
   return message || `夸克网盘返回了未知的业务码 ${code}。`;
+}
+
+/**
+ * Whether the answer says that the token of the share is not accepted.
+ *
+ * The platform hands out a token that is already invalid every now and then,
+ * and it says so with a code. A token that is refused is worth a new one.
+ */
+function isInvalidToken(error: unknown): boolean {
+  if (!(error instanceof ToolError)) return false;
+  const detail = error.details?.find(item => item.path === 'code');
+  if (detail) return detail.message === String(CODE_INVALID_TOKEN);
+  return /非法token|token.*无效/i.test(error.message);
 }
 
 /**
@@ -215,6 +247,35 @@ export const quarkAdapter: QuarkAdapter = {
     return token;
   },
 
+  /**
+   * Asks for a token of the share that the platform accepts.
+   *
+   * The platform hands out a token that is already invalid every now and
+   * then, and it says so with the code of an invalid token. A token is only
+   * worth what it can do, so a token that is refused is thrown away and
+   * another one is asked for.
+   */
+  /**
+   * Asks for a token of the share and uses it, and asks for another one when
+   * the platform refuses the token it handed out.
+   *
+   * The platform hands out a token that is already invalid every now and
+   * then, and it says so with a code of an invalid token. A token that is
+   * refused is worth a new one, so the work is done again with a new token.
+   */
+  async withUsableToken<T>(context: AdapterContext, work: (token: QuarkShareToken) => Promise<T>): Promise<T> {
+    for (let attempt = 1; attempt <= TOKEN_ATTEMPTS; attempt++) {
+      const token = await this.requestToken(context);
+      try {
+        return await work(token);
+      } catch (error) {
+        if (!isInvalidToken(error) || attempt === TOKEN_ATTEMPTS) throw error;
+        context.reportProgress('分享令牌无效，重新获取');
+      }
+    }
+    throw new ToolError('TOOL_FAILED', '夸克网盘没有返回可用的分享令牌。');
+  },
+
   async requestPage(context, stoken, parent, page) {
     const query = new URLSearchParams({
       pr: 'ucpro',
@@ -246,18 +307,56 @@ export const quarkAdapter: QuarkAdapter = {
 
   async list(context: AdapterContext): Promise<NetdiskShare> {
     context.reportProgress('读取分享内容');
-    const token = await this.requestToken(context);
-    const root = await this.readRoot(context, token);
-    const files: NetdiskFile[] = [...root.entries];
-    let entries = root.entries;
-    for (let page = 2; page <= 500; page++) {
-      // A page that is not full is the last one of the folder.
-      if (entries.length < PAGE_SIZE) break;
+    return this.withUsableToken(context, async token => {
+      // When the caller named the files it wants, only the folders on the
+      // way to them are read. A share may hold thousands of files, and
+      // reading all of them is slow enough for the platform to refuse the
+      // requests.
+      const wanted = context.paths ?? [];
+      if (wanted.length) {
+        const files: NetdiskFile[] = [];
+        for (const path of wanted) {
+          const found = await this.findByPath(context, token, path);
+          if (found) files.push(found);
+        }
+        return { title: token.title || '夸克分享', files };
+      }
+      const files = await this.readShare(context, token);
+      return { title: token.title || '夸克分享', files };
+    });
+  },
+
+  /**
+   * Reads a folder of the share and the folders in it.
+   *
+   * The depth is limited, because a share that points into itself would
+   * otherwise walk forever.
+   */
+  async walk(context, token, parent, prefix, files, depth, visited, seen) {
+    if (depth > MAX_DEPTH) return;
+    // A folder that was already read is not read again, so a folder that
+    // points at itself ends the walk.
+    if (visited.has(parent)) return;
+    visited.add(parent);
+    const entries: NetdiskFile[] = [];
+    let page = 1;
+    for (; page <= 500; page++) {
       context.reportProgress(`读取目录第 ${page} 页`);
-      entries = await this.requestPage(context, token.stoken, root.parent, page);
-      files.push(...entries);
+      const batch = await this.requestPage(context, token.stoken, parent, page);
+      entries.push(...batch);
+      // A page that is not full is the last one of the folder.
+      if (batch.length < PAGE_SIZE) break;
     }
-    return { title: token.title || '夸克分享', files };
+    for (const entry of entries) {
+      if (seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      // The path of the entry carries the folders it is in.
+      const path = `${prefix}${entry.name}${entry.isDirectory ? '/' : ''}`;
+      files.push({ ...entry, path });
+      if (entry.isDirectory) {
+        await this.walk(context, token, entry.id, `${prefix}${entry.name}/`, files, depth + 1, visited, seen);
+      }
+    }
   },
 
   /**
@@ -290,38 +389,98 @@ export const quarkAdapter: QuarkAdapter = {
   },
 
   /**
-   * Finds a member of the share again, for a link that is fetched a second
-   * time. The file is somewhere in the folder and the answer is paged, so
-   * every page is read until the member shows up.
+   * Finds a member of the share again, with the token of the share in hand.
+   *
+   * The member is somewhere in the share, and the share holds folders, so
+   * every folder is looked into until the member shows up.
    */
   async findEntry(context: AdapterContext, token: QuarkShareToken, file: NetdiskFile): Promise<NetdiskFile | null> {
+    // The path of the member is known when it came from the listing, and
+    // following it needs a handful of requests. Only a member whose path is
+    // unknown makes the whole share be read.
+    if (file.path) {
+      const byPath = await this.findByPath(context, token, file.path);
+      if (byPath) return byPath;
+    }
+    const files = await this.readShare(context, token);
+    const found = files.find(entry => entry.id === file.id)
+      ?? files.find(entry => entry.name === file.name);
+    return found ?? null;
+  },
+
+  /**
+   * Reads every file of the share.
+   *
+   * A share holds folders, and a folder holds more of them, so the walk goes
+   * into every folder. The path of an entry carries the folders it is in, so
+   * a file deep down still has the name the user knows it by.
+   */
+  async readShare(context: AdapterContext, token: QuarkShareToken): Promise<NetdiskFile[]> {
+    const root = await this.readRoot(context, token);
+    const files: NetdiskFile[] = [];
+    // A folder that is already visited is not visited again, so a folder that
+    // points at itself does not walk forever.
+    const visited = new Set<string>();
+    // An entry that is already listed is not listed again, so a folder that
+    // points at itself does not fill the list with copies of itself.
+    const seen = new Set<string>();
+    for (const entry of root.entries) {
+      if (seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      const path = `${entry.name}${entry.isDirectory ? '/' : ''}`;
+      files.push({ ...entry, path });
+      if (entry.isDirectory) {
+        await this.walk(context, token, entry.id, `${entry.name}/`, files, 1, visited, seen);
+      }
+    }
+    return files;
+  },
+
+  /**
+   * Finds a member of the share by its path, without reading the whole share.
+   *
+   * A share may hold thousands of files, and reading all of them takes long
+   * enough for the platform to refuse the requests. When the path of the
+   * member is known, the folders on the way to it are entered one by one,
+   * which is a handful of requests instead of hundreds.
+   */
+  async findByPath(context: AdapterContext, token: QuarkShareToken, path: string): Promise<NetdiskFile | null> {
+    const parts = path.split('/').filter(Boolean);
+    if (!parts.length) return null;
     const root = await this.readRoot(context, token);
     let entries = root.entries;
-    for (let page = 1; page <= 500; page++) {
-      const found = entries.find(entry => entry.id === file.id)
-        ?? entries.find(entry => entry.name === file.name);
-      if (found) return found;
-      // A page that is not full is the last one of the folder.
-      if (entries.length < PAGE_SIZE) break;
-      entries = await this.requestPage(context, token.stoken, root.parent, page + 1);
+    let parent = '';
+    for (const [index, part] of parts.entries()) {
+      const wanted = part.toLowerCase();
+      const hit = entries.find(entry => entry.name.toLowerCase() === wanted);
+      if (!hit) return null;
+      const full = `${parent}${hit.name}`;
+      if (index === parts.length - 1) {
+        return { ...hit, path: hit.isDirectory ? `${full}/` : full };
+      }
+      // Only a folder can hold the next part of the path.
+      if (!hit.isDirectory) return null;
+      parent = `${full}/`;
+      entries = await this.requestPage(context, token.stoken, hit.id, 1);
     }
     return null;
   },
 
   async link(context: AdapterContext, file: NetdiskFile): Promise<NetdiskLink> {
     context.reportProgress('解析下载地址');
-    const token = await this.requestToken(context);
-    // The download request asks for the token of the member. A file that came
-    // from the listing carries it, while a link that is fetched again knows
-    // only the id of the file, so the share is read again to find it.
-    let fid = file.id;
-    let fidToken = file.fidToken ?? '';
-    if (!fidToken) {
-      const found = await this.findEntry(context, token, file);
-      if (!found) throw new ToolError('TOOL_FAILED', '夸克网盘分享里没有找到该文件，请重新解析分享。');
-      fid = found.id;
-      fidToken = found.fidToken ?? '';
-    }
+    return this.withUsableToken(context, token => this.linkWithToken(context, token, file));
+  },
+
+  async linkWithToken(context: AdapterContext, token: QuarkShareToken, file: NetdiskFile): Promise<NetdiskLink> {
+    // The token of a member belongs to the token of the share it was read
+    // with. A token of another share is refused by the platform, so the
+    // member is read again with the very token of this run. That is also
+    // what a link that is fetched a second time needs, because it knows only
+    // the id of the file.
+    const found = await this.findEntry(context, token, file);
+    if (!found) throw new ToolError('TOOL_FAILED', '夸克网盘分享里没有找到该文件，请重新解析分享。');
+    const fid = found.id;
+    const fidToken = found.fidToken ?? '';
     if (!fidToken) throw new ToolError('TOOL_FAILED', '夸克网盘没有返回文件令牌，解析失败。');
 
     const answer = await this.request(

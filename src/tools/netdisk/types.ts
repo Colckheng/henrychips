@@ -82,6 +82,12 @@ export interface AdapterContext {
   credential: PlatformCredential | null;
   signal: AbortSignal;
   reportProgress: (phase: string, percent?: number) => void;
+  /**
+   * The paths of the files the caller asked for. A share may hold thousands
+   * of files, so an adapter that can find a file by its path reads only the
+   * folders on the way to it.
+   */
+  paths?: string[];
 }
 
 /**

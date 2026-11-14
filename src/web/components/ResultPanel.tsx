@@ -30,7 +30,7 @@ function ResultView({ tool, data, onDownload }: { tool: string; data: Record<str
   if (tool === 'files_plan') return <FilesResult data={data} />;
   if (tool === 'text_stats') return <><Metrics data={data} keys={['characters', 'charactersWithoutWhitespace', 'lines', 'hanCharacters', 'latinWords']} /><p className="inline-note">字符按 Unicode 码点统计；拉丁词数不代表通用分词结果。</p></>;
   if (tool === 'bilibili_video') return <MediaStreams data={data} />;
-  if (tool === 'netdisk_resolve') return <NetdiskResult data={data} onDownload={onDownload} />;
+  if (tool === 'netdisk_share') return <NetdiskResult data={data} onDownload={onDownload} />;
   return <GenericResult data={data} />;
 }
 

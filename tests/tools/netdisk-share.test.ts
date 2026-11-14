@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { PublicHttp, ToolContext } from '../../src/contracts/tool.js';
 import { ToolError } from '../../src/core/errors.js';
-import { netdiskResolveTool } from '../../src/tools/netdisk-resolve.js';
+import { netdiskShareTool } from '../../src/tools/netdisk-share.js';
 import { adaptersByPlatform } from '../../src/tools/netdisk/adapters/index.js';
 import type { AdapterContext, NetdiskAdapter, NetdiskFile, NetdiskLink } from '../../src/tools/netdisk/types.js';
 import { limits } from './helpers.js';
@@ -78,20 +78,20 @@ function registerStub(adapter: NetdiskAdapter): () => void {
 }
 
 test('declares a strict input schema and rejects unknown fields', () => {
-  const parsed = netdiskResolveTool.inputSchema.safeParse({ url: 'https://pan.quark.cn/s/abc', unknown: 1 });
+  const parsed = netdiskShareTool.inputSchema.safeParse({ url: 'https://pan.quark.cn/s/abc', unknown: 1 });
   assert.equal(parsed.success, false);
 });
 
 test('reports an unsupported platform instead of guessing', async () => {
   await assert.rejects(
-    () => netdiskResolveTool.invoke({ url: 'https://www.ilanzou.com/s/AbCdEfGh' }, contextOf(process.cwd())),
+    () => netdiskShareTool.invoke({ url: 'https://www.ilanzou.com/s/AbCdEfGh' }, contextOf(process.cwd())),
     /优享版/,
   );
 });
 
 test('exposes a documented example', () => {
-  assert.ok(netdiskResolveTool.examples.length >= 1);
-  const url = netdiskResolveTool.examples[0].input.url;
+  assert.ok(netdiskShareTool.examples.length >= 1);
+  const url = netdiskShareTool.examples[0].input.url;
   assert.equal(typeof url === 'string' && url.length > 0, true);
 });
 
@@ -109,7 +109,7 @@ test('keeps the links of the files that worked when one file fails', async () =>
   });
   const stateDirectory = await stateDirectoryOf();
   try {
-    const result = await netdiskResolveTool.invoke({ url: 'https://pan.quark.cn/s/abc123' }, contextOf(stateDirectory));
+    const result = await netdiskShareTool.invoke({ url: 'https://pan.quark.cn/s/abc123' }, contextOf(stateDirectory));
     const links = result.links as NetdiskLink[];
     const failures = result.linkFailures as Array<{ path: string; reason: string }>;
     assert.equal(links.length, 7);
@@ -133,7 +133,7 @@ test('lists the files without asking for a link in list mode', async () => {
   });
   const stateDirectory = await stateDirectoryOf();
   try {
-    const result = await netdiskResolveTool.invoke(
+    const result = await netdiskShareTool.invoke(
       { url: 'https://pan.quark.cn/s/abc123', mode: 'list' },
       contextOf(stateDirectory),
     );
@@ -156,7 +156,7 @@ test('takes the links of the named paths only and reports a path that is not in 
   });
   const stateDirectory = await stateDirectoryOf();
   try {
-    const result = await netdiskResolveTool.invoke(
+    const result = await netdiskShareTool.invoke(
       { url: 'https://pan.quark.cn/s/abc123', paths: ['file-2.txt', 'missing.txt'] },
       contextOf(stateDirectory),
     );
@@ -184,7 +184,7 @@ test('names a path of a folder instead of asking the platform for a link of it',
   });
   const stateDirectory = await stateDirectoryOf();
   try {
-    const result = await netdiskResolveTool.invoke(
+    const result = await netdiskShareTool.invoke(
       { url: 'https://pan.quark.cn/s/abc123', paths: ['tools/'] },
       contextOf(stateDirectory),
     );
@@ -210,7 +210,7 @@ test('refuses the request instead of dropping the files that are over the limit'
   const stateDirectory = await stateDirectoryOf();
   try {
     await assert.rejects(
-      () => netdiskResolveTool.invoke(
+      () => netdiskShareTool.invoke(
         { url: 'https://pan.quark.cn/s/abc123', maxLinks: 10 },
         contextOf(stateDirectory),
       ),
@@ -234,7 +234,7 @@ test('takes a token out of the reason of a failure', async () => {
   });
   const stateDirectory = await stateDirectoryOf();
   try {
-    const result = await netdiskResolveTool.invoke({ url: 'https://pan.quark.cn/s/abc123' }, contextOf(stateDirectory));
+    const result = await netdiskShareTool.invoke({ url: 'https://pan.quark.cn/s/abc123' }, contextOf(stateDirectory));
     const failures = result.linkFailures as Array<{ path: string; reason: string }>;
     assert.equal(failures.length, 1);
     assert.equal(failures[0].reason.includes('aVeryLongCredentialValue0123456789'), false);
@@ -257,7 +257,7 @@ test('rejects a link that does not fit the contract of the adapters', async () =
   const stateDirectory = await stateDirectoryOf();
   try {
     await assert.rejects(
-      () => netdiskResolveTool.invoke({ url: 'https://pan.quark.cn/s/abc123' }, contextOf(stateDirectory)),
+      () => netdiskShareTool.invoke({ url: 'https://pan.quark.cn/s/abc123' }, contextOf(stateDirectory)),
       { code: 'TOOL_FAILED' },
     );
   } finally {
@@ -277,7 +277,7 @@ test('ends the run when it is cancelled instead of failing the file', async () =
   const stateDirectory = await stateDirectoryOf();
   try {
     await assert.rejects(
-      () => netdiskResolveTool.invoke({ url: 'https://pan.quark.cn/s/abc123' }, contextOf(stateDirectory)),
+      () => netdiskShareTool.invoke({ url: 'https://pan.quark.cn/s/abc123' }, contextOf(stateDirectory)),
       { code: 'CANCELLED' },
     );
   } finally {
@@ -296,7 +296,7 @@ test('states a total of zero for an empty share', async () => {
   });
   const stateDirectory = await stateDirectoryOf();
   try {
-    const result = await netdiskResolveTool.invoke({ url: 'https://pan.quark.cn/s/abc123' }, contextOf(stateDirectory));
+    const result = await netdiskShareTool.invoke({ url: 'https://pan.quark.cn/s/abc123' }, contextOf(stateDirectory));
     assert.equal(result.totalBytes, 0);
   } finally {
     restore();
@@ -315,7 +315,7 @@ test('refuses a platform that needs a credential that is not configured', async 
   const stateDirectory = await stateDirectoryOf();
   try {
     await assert.rejects(
-      () => netdiskResolveTool.invoke({ url: 'https://pan.baidu.com/s/1AbCdEfGh' }, contextOf(stateDirectory)),
+      () => netdiskShareTool.invoke({ url: 'https://pan.baidu.com/s/1AbCdEfGh' }, contextOf(stateDirectory)),
       /凭证/,
     );
   } finally {
@@ -336,7 +336,7 @@ test('keeps the credential out of the output and only reports that one was used'
   const previous = process.env.HENRY_NETDISK_BAIDU_BDUSS;
   process.env.HENRY_NETDISK_BAIDU_BDUSS = 'secret-bduss-value';
   try {
-    const result = await netdiskResolveTool.invoke({ url: 'https://pan.baidu.com/s/1AbCdEfGh' }, contextOf(stateDirectory));
+    const result = await netdiskShareTool.invoke({ url: 'https://pan.baidu.com/s/1AbCdEfGh' }, contextOf(stateDirectory));
     assert.equal(result.credentialUsed, true);
     assert.equal(JSON.stringify(result).includes('secret-bduss-value'), false);
   } finally {
@@ -345,4 +345,64 @@ test('keeps the credential out of the output and only reports that one was used'
     restore();
     await rm(stateDirectory, { recursive: true, force: true });
   }
+});
+
+import { safeOutputPath } from '../../src/tools/netdisk/paths.js';
+
+test('rejects an unknown field in the input', () => {
+  assert.equal(netdiskShareTool.inputSchema.safeParse({ url: 'https://pan.quark.cn/s/a', oops: 1 }).success, false);
+});
+
+test('the paths are optional, because a share can be listed without them', () => {
+  assert.equal(netdiskShareTool.inputSchema.safeParse({ url: 'https://pan.quark.cn/s/a' }).success, true);
+  // An unknown field is still refused.
+  assert.equal(netdiskShareTool.inputSchema.safeParse({ url: 'https://pan.quark.cn/s/a', oops: 1 }).success, false);
+});
+
+test('exposes a documented example', () => {
+  assert.ok(netdiskShareTool.examples.length >= 1);
+});
+
+test('turns the path of a file into a name that is safe in the output directory', () => {
+  assert.equal(safeOutputPath('a/b.txt', 'b.txt'), 'b.txt');
+  // A name of a platform may carry characters that a file name cannot hold.
+  assert.equal(safeOutputPath('iXXXX?sign=abc', 'iXXXX?sign=abc'), 'iXXXX_sign=abc');
+  assert.equal(safeOutputPath('', ''), 'download');
+});
+
+test('hands the link to the local downloader instead of creating a task', async t => {
+  const sent: Array<{ url: string; fileName: string; headers?: Record<string, string> }> = [];
+  const created: string[] = [];
+  const context = {
+    ndm: { send: async (target: { url: string; fileName: string; headers?: Record<string, string> }) => { sent.push(target); } },
+    downloads: { create: () => { created.push('created'); return { id: 'task-1' }; } },
+    http: {},
+    limits: {},
+    stateDirectory: '',
+    signal: new AbortController().signal,
+  } as unknown as ToolContext;
+  // The tool needs an adapter of the platform, so the Lanzou one is used with
+  // a fake transport that answers with a share of one file.
+  const { lanzouAdapter } = await import('../../src/tools/netdisk/adapters/lanzou.js');
+  const original = lanzouAdapter.list;
+  lanzouAdapter.list = async () => ({ title: '分享', files: [{ id: '1', path: 'a.bin', name: 'a.bin', sizeBytes: 5, isDirectory: false }] });
+  const originalLink = lanzouAdapter.link;
+  lanzouAdapter.link = async () => ({
+    path: 'a.bin', name: 'a.bin', sizeBytes: 5, url: 'https://cdn.example.com/a.bin',
+    headers: { Cookie: 'down_ip=1' }, rangeSupported: true,
+    source: { platform: 'lanzou' as const, shareUrl: 'https://example.com/s/1', code: null, filePath: 'a.bin', fileId: '1' },
+  });
+  t.after(() => { lanzouAdapter.list = original; lanzouAdapter.link = originalLink; });
+  const result = await netdiskShareTool.execute(
+    { url: 'https://wwx.lanzoui.com/abc', paths: ['a.bin'], download: true, backend: 'ndm' } as never,
+    context,
+  );
+  assert.equal(result.backend, 'ndm');
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].url, 'https://cdn.example.com/a.bin');
+  assert.equal(sent[0].fileName, 'a.bin');
+  assert.equal(sent[0].headers?.Cookie, 'down_ip=1');
+  // The protocol of the downloader hands out no task, so the manager is not
+  // asked for one.
+  assert.deepEqual(created, []);
 });

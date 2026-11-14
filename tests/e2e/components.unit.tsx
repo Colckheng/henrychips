@@ -78,10 +78,10 @@ test('media streams are rendered as a table instead of a raw JSON blob', () => {
 
 test('the netdisk result lists the files and the links with their actions', () => {
   const html = renderToStaticMarkup(createElement(ResultPanel, {
-    tool: 'netdisk_resolve', status: 'done', retry: () => undefined,
+    tool: 'netdisk_share', status: 'done', retry: () => undefined,
     result: {
       ok: true,
-      meta: { ...meta, tool: 'netdisk_resolve' },
+      meta: { ...meta, tool: 'netdisk_share' },
       data: {
         platform: 'quark', platformLabel: '夸克网盘', shareId: 'abc123', title: '示例分享',
         fileCount: 2, totalBytes: 1024,

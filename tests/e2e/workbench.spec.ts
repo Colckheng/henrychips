@@ -207,7 +207,7 @@ test('PDF, environment and file preview execute without browser errors', async (
 });
 
 test('shows the netdisk resolve result with copyable links', async ({ page }) => {
-  await openTool(page, 'netdisk_resolve');
+  await openTool(page, 'netdisk_share');
   await expect(page.getByRole('heading', { name: '运行结果' })).toBeVisible();
 });
 
@@ -236,7 +236,7 @@ test('the download tasks reach the browser when the event stream is not availabl
 });
 
 test('the netdisk result shows the links with a curl command that carries the headers', async ({ page }) => {
-  await page.route('**/api/tools/netdisk_resolve/run', route => route.fulfill({
+  await page.route('**/api/tools/netdisk_share/run', route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({
@@ -248,10 +248,10 @@ test('the netdisk result shows the links with a curl command that carries the he
         links: [{ path: 'a.bin', name: 'a.bin', sizeBytes: 1024, url: 'https://cdn/a.bin', headers: { Referer: 'https://pan.quark.cn/' }, rangeSupported: true }],
         linkFailures: [], credentialUsed: false, warnings: [],
       },
-      meta: { runId: 'run-netdisk', tool: 'netdisk_resolve', source: 'web', startedAt: '2026-11-12T00:00:00Z', durationMs: 12, warnings: [] },
+      meta: { runId: 'run-netdisk', tool: 'netdisk_share', source: 'web', startedAt: '2026-11-12T00:00:00Z', durationMs: 12, warnings: [] },
     }),
   }));
-  await openTool(page, 'netdisk_resolve');
+  await openTool(page, 'netdisk_share');
   await page.locator('[name="url"]').fill('https://pan.quark.cn/s/example');
   await page.getByRole('button', { name: '运行工具', exact: true }).click();
   await expect(page.getByRole('table', { name: '下载直链列表' })).toBeVisible();

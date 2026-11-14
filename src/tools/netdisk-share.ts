@@ -1,17 +1,16 @@
 import { z } from 'zod';
 import { defineTool } from '../core/define-tool.js';
+import type { ToolContext } from '../contracts/tool.js';
 import { ToolError } from '../core/errors.js';
 import { NetdiskSession } from './netdisk/session.js';
 import { adaptersByPlatform } from './netdisk/adapters/index.js';
 import { NETDISK_PLATFORM_LABELS, parseShareLink } from './netdisk/share-link.js';
 import { resolveCredential } from './netdisk/credentials.js';
-import type { NetdiskFile } from './netdisk/types.js';
+import { safeOutputPath } from './netdisk/paths.js';
+import type { NetdiskFile, NetdiskLink, NetdiskPlatform } from './netdisk/types.js';
 
-/** The platforms a link can be resolved for; the premium edition has no parsing interface. */
-const platformEnum = z.enum(['lanzou', 'guangya', 'quark', 'uc', 'pan115', 'c139', 'pan123', 'xunlei', 'baidu']);
-
-/** Every platform of the contract of the adapters, the premium edition included. */
 const contractPlatformEnum = z.enum(['lanzou', 'ilanzou', 'guangya', 'quark', 'uc', 'pan115', 'c139', 'pan123', 'xunlei', 'baidu']);
+const platformEnum = z.enum(['lanzou', 'guangya', 'quark', 'uc', 'pan115', 'c139', 'pan123', 'xunlei', 'baidu']);
 
 /**
  * The link of a file, as the contract of the adapters declares it. The shape
@@ -54,12 +53,39 @@ function matchesPath(file: NetdiskFile, requested: string): boolean {
   return file.path === requested || file.path === `${requested}/`;
 }
 
-export const netdiskResolveTool = defineTool({
-  name: 'netdisk_resolve',
-  title: '网盘分享解析',
-  description: '解析夸克 / UC / 迅雷 / 百度 / 139 / 123 / 115 / 光鸭 / 蓝奏云的分享链接，列出分享内的文件并给出已验证的下载直链与所需请求头。直链通常十几分钟内有效，请尽快使用。',
+/**
+ * Hands a file to the downloader. The task id is handed back, or nothing when
+ * the link was pushed to the local downloader, which has no task of its own.
+ */
+async function enqueue(
+  ctx: ToolContext,
+  platform: NetdiskPlatform,
+  title: string,
+  file: NetdiskFile,
+  link: NetdiskLink,
+  backend: 'builtin' | 'ndm',
+): Promise<string | undefined> {
+  if (backend === 'ndm') {
+    // The protocol of the local downloader hands out no task id and no
+    // progress, so the file is pushed and the work station stops watching it.
+    if (!ctx.ndm) throw new ToolError('ACCESS_DENIED', '当前环境未启用本机下载器对接。');
+    await ctx.ndm.send({ url: link.url, fileName: file.name, headers: link.headers });
+    return undefined;
+  }
+  const task = ctx.downloads!.create({
+    platform, title, fileName: file.name, filePath: file.path,
+    sizeBytes: file.sizeBytes, backend, source: link.source,
+    outputPath: safeOutputPath(file.path, file.name), link,
+  });
+  return task.id;
+}
+
+export const netdiskShareTool = defineTool({
+  name: 'netdisk_share',
+  title: '网盘分享解析与下载',
+  description: '解析网盘分享链接，列出分享内的文件并给出已验证的下载直链与所需请求头；也可以把选中的文件交给工作站分片下载（支持断点续传），或推给本机 Neat Download Manager。直链通常十几分钟内有效。',
   category: 'web',
-  capabilities: ['network:public'],
+  capabilities: ['network:public', 'files:write', 'downloader:local'],
   timeoutMs: 120_000,
   fields: [
     { name: 'url', label: '分享链接或文案', type: 'textarea', description: '可以整段粘贴分享文案，工具会自动找出链接与提取码。' },
@@ -74,7 +100,12 @@ export const netdiskResolveTool = defineTool({
       { label: '列出文件并取直链', value: 'link' },
       { label: '只列出文件', value: 'list' },
     ] },
-    { name: 'paths', label: '指定文件路径', type: 'textarea', description: '每行一个分享内的相对路径，只给这些文件取直链。留空表示全部文件。' },
+    { name: 'paths', label: '指定文件路径', type: 'textarea', description: '每行一个分享内的相对路径，只给这些文件取直链。在解析结果里勾选文件后，这里会自动填好。' },
+    { name: 'download', label: '下载选中的文件', type: 'checkbox', description: '勾选后，指定路径里的文件会被下载到输出目录；不勾选时只解析。' },
+    { name: 'backend', label: '下载方式', type: 'select', description: '默认由工作站自己下载。', options: [
+      { label: '工作站内置下载（默认）', value: 'builtin' },
+      { label: '交给 Neat Download Manager', value: 'ndm' },
+    ] },
     { name: 'maxLinks', label: '最多取几条直链', type: 'number', description: '默认 10，上限 50。受单次执行 120 秒限制。' },
   ],
   examples: [
@@ -86,6 +117,8 @@ export const netdiskResolveTool = defineTool({
     platform: z.union([z.literal('auto'), platformEnum]).default('auto'),
     mode: z.enum(['list', 'link']).default('link'),
     paths: z.array(z.string()).optional(),
+    download: z.boolean().default(false),
+    backend: z.enum(['builtin', 'ndm']).default('builtin'),
     maxLinks: z.number().int().min(1).max(50).default(10),
   }),
   outputSchema: z.strictObject({
@@ -106,10 +139,22 @@ export const netdiskResolveTool = defineTool({
     // adapters, so a field it adds by accident never reaches the caller.
     links: z.array(linkSchema),
     linkFailures: z.array(z.strictObject({ path: z.string(), reason: z.string() })),
+    taskIds: z.array(z.string()),
+    backend: z.enum(['builtin', 'ndm']),
     credentialUsed: z.boolean(),
     warnings: z.array(z.string()),
   }),
-  async execute({ url, code, platform, mode, paths, maxLinks }, ctx) {
+  async execute({ url, code, platform, mode, paths, download, backend, maxLinks }, ctx) {
+    if (!ctx.http) throw new ToolError('ACCESS_DENIED', '当前环境未启用网络访问。');
+    // The paths name the files the links are asked for, and the download flag
+    // says whether those files are also downloaded.
+    const wantsDownload = Boolean(download) && Boolean(paths?.length);
+    if (wantsDownload && backend === 'builtin' && !ctx.downloads) {
+      throw new ToolError('ACCESS_DENIED', '当前环境未启用下载任务。');
+    }
+    if (wantsDownload && backend === 'ndm' && !ctx.ndm) {
+      throw new ToolError('ACCESS_DENIED', '当前环境未启用本机下载器对接。');
+    }
     const parsed = parseShareLink(url);
     if (!parsed) throw new ToolError('INVALID_INPUT', '无法识别该链接的网盘平台，请确认是完整的分享链接或分享文案。');
     // The premium edition has no public parsing interface, so the link is
@@ -117,8 +162,9 @@ export const netdiskResolveTool = defineTool({
     if (parsed.platform === 'ilanzou') {
       throw new ToolError('UNSUPPORTED_FORMAT', '蓝奏云优享版（ilanzou）官方没有分享解析接口，暂不支持。');
     }
-    if (!ctx.http) throw new ToolError('ACCESS_DENIED', '当前环境未启用网络访问。');
-    if (platform !== 'auto' && platform !== parsed.platform) {
+    // The default of the schema only applies when the input is parsed, so a
+    // direct call may leave it out.
+    if (platform && platform !== 'auto' && platform !== parsed.platform) {
       throw new ToolError('INVALID_INPUT', `链接识别为${NETDISK_PLATFORM_LABELS[parsed.platform]}，与指定的平台不一致。`);
     }
     const adapter = adaptersByPlatform.get(parsed.platform);
@@ -136,6 +182,9 @@ export const netdiskResolveTool = defineTool({
       credential,
       signal: ctx.signal,
       reportProgress: (phase: string, percent?: number) => ctx.reportProgress?.({ phase, percent }),
+      // The files the caller asked for are named, so an adapter reads only the
+      // folders on the way to them instead of the whole share.
+      ...(paths?.length ? { paths } : {}),
     };
     ctx.reportProgress?.({ phase: '读取分享内容' });
     const share = await adapter.list(context);
@@ -149,56 +198,62 @@ export const netdiskResolveTool = defineTool({
     // The tool lists every entry the adapter handed out, so the number is
     // only a hint about how many links a share would produce.
     if (files.length > 500) warnings.push(`分享内有 ${files.length} 个条目，取直链建议用 paths 精确指定需要的文件。`);
-    if (mode === 'list') {
-      return {
-        platform: parsed.platform, platformLabel: adapter.label, shareId: parsed.shareId,
-        title: share.title, fileCount: files.length, totalBytes, files, links: [],
-        linkFailures: [], credentialUsed: Boolean(credential), warnings,
-      };
-    }
+
+    // The files the user asked for. A path that is not in the share would
+    // look like a file that was skipped on purpose, so it is named.
     const requested = paths ?? [];
-    // A directory has no link of its own, so it is never asked for one.
-    const wanted = files.filter(file => (
-      !file.isDirectory && (!requested.length || requested.some(path => matchesPath(file, path)))
-    ));
-    // A path that is not in the share would look like a file that was skipped
-    // on purpose, so it is named in the warnings. A path of a directory is
-    // named too, because a directory has no link to hand out.
+    const wanted = requested.length
+      ? files.filter(file => !file.isDirectory && requested.some(path => matchesPath(file, path)))
+      : [];
     if (requested.length) {
       const missing = requested.filter(path => !files.some(file => matchesPath(file, path)));
       if (missing.length) warnings.push(`以下路径不在该分享中：${missing.join('、')}。`);
       const folders = requested.filter(path => files.some(file => matchesPath(file, path) && file.isDirectory));
       if (folders.length) warnings.push(`以下路径是目录，没有直链可取：${folders.join('、')}。`);
     }
-    // Dropping the files that are over the limit would hide them from the
-    // user, so the request is refused and the user decides what to narrow.
-    if (wanted.length > maxLinks) {
-      throw new ToolError('LIMIT_EXCEEDED', `可取直链的文件有 ${wanted.length} 个，超过本次上限 ${maxLinks} 个，请调高 maxLinks 或改用 paths 精确指定。`);
-    }
+
     const links: Array<z.output<typeof linkSchema>> = [];
     const linkFailures: Array<{ path: string; reason: string }> = [];
-    for (const [index, file] of wanted.entries()) {
-      ctx.reportProgress?.({ phase: `取直链 ${index + 1}/${wanted.length}` });
-      try {
-        links.push({ ...(await adapter.link(context, file)) });
-      } catch (error) {
-        // A cancellation ends the whole run, so it is not a failure of the
-        // file that was being resolved.
-        if (error instanceof ToolError && error.code === 'CANCELLED') throw error;
-        if (ctx.signal.aborted) throw new ToolError('CANCELLED', '本次执行已取消。');
-        // A file that cannot be resolved is an outcome of that file alone, so
-        // the links of the other files are still handed out.
-        linkFailures.push({
-          path: file.path,
-          reason: sanitizeReason(error instanceof Error ? error.message : '取链失败'),
-        });
+    const taskIds: string[] = [];
+    // The files a direct link is asked for. When the user named the files to
+    // download, only those are asked for, so the listing stays quick.
+    // A download always needs the link of the file, so the depth does not
+    // matter then.
+    const toLink = requested.length ? wanted : files.filter(file => !file.isDirectory);
+    if (mode === 'link' && toLink.length > maxLinks) {
+      throw new ToolError('LIMIT_EXCEEDED', `可取直链的文件有 ${toLink.length} 个，超过本次上限 ${maxLinks} 个，请调高 maxLinks 或改用 paths 精确指定。`);
+    }
+    const askLinks = mode === 'link' || requested.length > 0;
+    if (askLinks) {
+      for (const [index, file] of toLink.entries()) {
+        ctx.reportProgress?.({ phase: `取直链 ${index + 1}/${toLink.length}` });
+        try {
+          const link = await adapter.link(context, file);
+          links.push({ ...link });
+          // A file the user asked to download becomes a task of its own.
+          if (wantsDownload) {
+            const task = await enqueue(ctx, parsed.platform, share.title, file, link, backend);
+            if (task) taskIds.push(task);
+          }
+        } catch (error) {
+          // A cancellation ends the whole run, so it is not a failure of the
+          // file that was being resolved.
+          if (error instanceof ToolError && error.code === 'CANCELLED') throw error;
+          if (ctx.signal.aborted) throw new ToolError('CANCELLED', '本次执行已取消。');
+          // A file that cannot be resolved is an outcome of that file alone, so
+          // the links of the other files are still handed out.
+          linkFailures.push({
+            path: file.path,
+            reason: sanitizeReason(error instanceof Error ? error.message : '取链失败'),
+          });
+        }
       }
     }
     if (links.length) warnings.push('直链通常在十几分钟内过期，请尽快下载。');
     return {
       platform: parsed.platform, platformLabel: adapter.label, shareId: parsed.shareId,
       title: share.title, fileCount: files.length, totalBytes, files, links, linkFailures,
-      credentialUsed: Boolean(credential), warnings,
+      taskIds, backend, credentialUsed: Boolean(credential), warnings,
     };
   },
 });

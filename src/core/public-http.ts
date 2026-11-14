@@ -194,6 +194,32 @@ function decodedSource(body: Readable, decoder: Transform): Readable {
  */
 const ERROR_BODY_MAX_BYTES = 64 * 1024;
 
+/**
+ * Reads the business code out of an error answer.
+ *
+ * A platform that refuses a request writes the reason in the body of the
+ * answer, as a code of its own. The code is what tells the caller whether it
+ * should try again with a new token or give up, so it is read even though
+ * the answer is an error one.
+ */
+async function readBusinessCode(
+  content: Buffer,
+  contentType: string,
+): Promise<{ code: number; message: string } | undefined> {
+  const mime = contentType.split(';')[0].trim().toLowerCase();
+  if (!['application/json', 'text/json'].includes(mime) && !mime.endsWith('+json')) return undefined;
+  try {
+    const parsed = JSON.parse(content.toString('utf8')) as unknown;
+    if (!parsed || typeof parsed !== 'object') return undefined;
+    const answer = parsed as Record<string, unknown>;
+    const code = typeof answer.code === 'number' ? answer.code : Number.NaN;
+    if (!Number.isFinite(code)) return undefined;
+    const message = typeof answer.message === 'string' ? answer.message
+      : typeof answer.msg === 'string' ? answer.msg : '';
+    return { code, message };
+  } catch { return undefined; }
+}
+
 export function createPublicHttp(maxBytes: number): PublicHttp {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new RangeError('maxBytes must be a positive safe integer');
   type Kind = 'html' | 'json' | 'binary' | 'stream' | 'head';
@@ -295,15 +321,18 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
             }
             continue;
           }
-          if (statusCode < 200 || statusCode >= 300) {
-            // A caller that wants to read the status of an error answer, a
-            // probe of a direct link for instance, asks for it explicitly.
-            if (!options?.allowErrorStatus) throw new ToolError('NETWORK_ERROR', '网页服务器未返回成功响应。');
-          }
           // An error answer is read for its status, not for its body, so the
           // size limit of the caller does not apply to it. The body is still
           // bounded, so a huge error page cannot exhaust the memory.
-          const errorAnswer = statusCode < 200 || statusCode >= 300;
+          let errorAnswer = statusCode < 200 || statusCode >= 300;
+          if (errorAnswer) {
+            // A caller that wants to read the status of an error answer, a
+            // probe of a direct link for instance, asks for it explicitly.
+            // Otherwise the answer is read for its business code, because a
+            // platform that reports its own trouble writes the reason in the
+            // body, and that code tells the caller what to do.
+            if (!options?.allowErrorStatus) errorAnswer = true;
+          }
           const errorBodyLimit = ERROR_BODY_MAX_BYTES;
           const bodyLimit = errorAnswer ? errorBodyLimit : limit;
           const contentType = typeof headers['content-type'] === 'string' ? headers['content-type'] : '';
@@ -364,6 +393,16 @@ export function createPublicHttp(maxBytes: number): PublicHttp {
           }
           checkAbort(signal);
           const buffer = Buffer.concat(chunks, total);
+          // An error answer of a platform carries the reason in the body, as
+          // a code of its own. The code tells the caller whether it should
+          // try again or give up, so it is handed over with the error.
+          if (errorAnswer && !options?.allowErrorStatus) {
+            const business = await readBusinessCode(buffer, contentType);
+            if (business !== undefined) {
+              throw new ToolError('NETWORK_ERROR', business.message || '网页服务器未返回成功响应。', [{ path: 'code', message: String(business.code) }]);
+            }
+            throw new ToolError('NETWORK_ERROR', '网页服务器未返回成功响应。');
+          }
           if (kind === 'html') {
             const charset = /charset\s*=\s*["']?([^\s;"']+)/i.exec(contentType)?.[1] ?? 'utf-8';
             let decoder: TextDecoder;
