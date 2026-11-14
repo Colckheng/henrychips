@@ -10,12 +10,10 @@ import { useRunEntries } from '../run-store.js';
 const navigation = [
   { page: 'tools', label: '工具箱', icon: LayoutGrid },
   { page: 'runs', label: '执行记录', icon: History },
+  { page: 'downloads', label: '下载任务', icon: Download },
   { page: 'integrations', label: 'AI 接入', icon: PlugZap },
   { page: 'servers', label: '服务器', icon: Server },
 ] as const;
-
-/** The pages that live outside the sidebar and are reached from the top bar. */
-const extraTitles: Partial<Record<Route['page'], string>> = { downloads: '下载任务' };
 
 /** The tasks that are still moving; a finished download is of no interest in the top bar. */
 const activeTaskStatuses = new Set(['queued', 'preparing', 'downloading', 'verifying']);
@@ -60,7 +58,7 @@ function DownloadTasks() {
 
 export function Shell({ route, tools, children }: { route: Route; tools?: ToolDescription[]; children: ReactNode }) {
   const section = route.page === 'tool' ? 'tools' : route.page;
-  const title = navigation.find(item => item.page === section)?.label ?? extraTitles[route.page] ?? '页面未找到';
+  const title = navigation.find(item => item.page === section)?.label ?? '页面未找到';
   const main = useRef<HTMLElement>(null);
   const previous = useRef(route.page === 'tool' ? `tool:${route.name}` : route.page);
   const current = route.page === 'tool' ? `tool:${route.name}` : route.page;
